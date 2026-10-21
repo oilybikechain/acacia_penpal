@@ -12,7 +12,9 @@ function header(raw) {
   if (h.includes('preference') && h.includes('gender')) return 'preference';
   if (h.includes('nickname')) return 'nickname';
   if (h.includes('penpal to know')) return 'note';
-  if (h.includes('telegram')) return 'telegram';
+  // Only the handle question identifies a participant. The registration
+  // acknowledgement also mentions Telegram and must remain an ignored column.
+  if (h.includes('telegram') && h.includes('handle')) return 'telegram';
   if (h.includes('mbti')) return 'mbti';
   if (h.includes('house')) return 'house';
   if (h.includes('major')) return 'major';

@@ -8,6 +8,7 @@ const { Store } = require('../src/store');
 const { Game } = require('../src/game');
 const { createBots, downloadCsv, PARTICIPANT_HELP } = require('../src/bots');
 const { initialiseBot, poll } = require('../src/polling');
+const { parseRoster } = require('../src/imports');
 
 let updateId=1;
 function message(id,text,username='person_0',type='private') {
@@ -38,6 +39,52 @@ test('real Telegram command routing registers before CSV and sends only waiting/
   assert.equal(Object.keys(store.read().accounts).length,1);
   for(const call of calls.filter(c=>c.method==='sendMessage')) assert.doesNotMatch(call.payload.text,/third digit|Aeon|Genesis|Nous|Telos|Zenith/i);
 });
+test('Forms signup CSV supports launch delivery and both participants retrieving their own assignment with /start',async t=>{
+  const {participant,admin,store,game,calls}=await setup(t);
+  const source=await fs.readFile(path.join(__dirname,'fixtures','forms-signups.csv'),'utf8');
+  // The acknowledgement never substitutes for actually starting the bot.
+  for (const answer of ['I have registered!!','I will register!!','Aiken Duit!!!']) {
+    const profiles=await parseRoster('\uFEFF'+source.replace('I have registered!!',answer));
+    assert.equal(profiles.length,2);
+    assert.deepEqual(profiles[0],{
+      name:'Alex Example',house:'Aeon',year:'Y1',mbti:'INTJ',major:'Computing',
+      gender:'Male',telegram:'alex_example',nickname:'Cookie dough',preference:'Any',
+      note:'Hello, penpal! I like books.'
+    });
+  }
+  await participant.handleUpdate(message(1,'/start','alex_example'));
+  assert.match(calls.at(-1).payload.text,/registered/);
+  await game.confirm('99',await game.stage('99','roster',{profiles:await parseRoster(source)}));
+  const [alex,jamie]=store.read().profiles;
+  await admin.handleUpdate(message(99,'/generate'));
+  assert.equal(store.read().pairs.length,1);
+  await game.approve('99');
+  for (const field of ['house','major','year','gender','name']) {
+    await admin.handleUpdate(message(99,`/sethint ${field} secret_${field}`));
+    assert.equal(calls.at(-1).payload.text,`Password configured for ${field}.`);
+  }
+  await participant.handleUpdate(message(1,'/start','alex_example'));
+  assert.match(calls.at(-1).payload.text,/start later/);
+  assert.doesNotMatch(calls.at(-1).payload.text,/Sunflower|drawing/);
+  await admin.handleUpdate(message(99,'/launch'));
+  await admin.handleUpdate(message(99,`/confirm ${store.read().pending['99'].token}`));
+  const expected=(own,partner)=>`Your nickname: ${own.nickname}\nYour code: ${own.code}\n\nYour penpal: ${partner.nickname}\nPenpal code: ${partner.code}\n\nTheir note:\n${partner.note}`;
+  const job=Object.values(store.read().jobs).find(j=>j.kind==='launch');
+  assert.equal(job.items.length,1);
+  assert.equal(job.items[0].userId,'1');
+  assert.equal(job.items[0].text,expected(alex,jamie));
+  for (const [id,own,partner] of [[1,alex,jamie],[2,jamie,alex]]) {
+    // Includes late registration and repeated /start calls.
+    for (let attempt=0;attempt<2;attempt++) {
+      await participant.handleUpdate(message(id,'/start',own.telegram));
+      assert.equal(calls.at(-1).payload.text,expected(own,partner));
+    }
+    await participant.handleUpdate(message(id,'/status',own.telegram));
+    assert.equal(calls.at(-1).payload.text,expected(own,partner));
+  }
+  assert.equal(Object.keys(store.read().accounts).length,2);
+});
+
 test('admin commands and menus require numeric ID authorization',async t=>{
   const {admin,store,calls}=await setup(t);
   await admin.handleUpdate(message(1,'/broadcast bad','admin_username'));

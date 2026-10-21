@@ -118,11 +118,8 @@ class Game {
       audit(s, actor, action); return result;
     });
   }
-  async compatibility(actor, table) {
-    return this.store.update(s => { draft(s); s.compatibility = table; s.pairs = []; s.pairingReady = false; audit(s, actor, 'compatibility uploaded'); });
-  }
   async generate(actor) {
-    return this.store.update(s => { draft(s); s.pairs = match(s.profiles, s.compatibility); s.pairingReady = false; audit(s, actor, 'pairings generated'); });
+    return this.store.update(s => { draft(s); s.pairs = match(s.profiles); s.pairingReady = false; audit(s, actor, 'pairings generated'); });
   }
   async approve(actor) {
     return this.store.update(s => { draft(s); this.validatePairs(s); if (!s.pairs.length) throw new Error('No pairs to approve'); s.pairingReady = true; audit(s, actor, 'pairings approved'); });

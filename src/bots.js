@@ -1,5 +1,5 @@
 const { Telegraf } = require('telegraf');
-const { parseRoster, parseCompatibility, csv, FIELDS } = require('./imports');
+const { parseRoster, csv, FIELDS } = require('./imports');
 const { participantStatus, partnerFor } = require('./game');
 
 const PARTICIPANT_HELP = 'Welcome to ACACIA Penpal!\n/start — register, even before survey data is uploaded\n/status — check your registration or penpal assignment\n/hint <password> — unlock a penpal hint during the game\n/help — show this help\n\nThe organisers will start the game later. This bot does not relay messages.';
@@ -7,7 +7,6 @@ const ADMIN_HELP = `ACACIA admin console
 /menu — management buttons
 /summary — game and registration counts
 /import — upload a survey CSV next (replaces the draft roster after confirmation)
-/compatibility — upload an MBTI score CSV next
 /list [search] — participant profiles
 /accounts [search] — registered Telegram accounts, including pending accounts
 /edit <code> <field> <value> — correct a draft profile
@@ -41,7 +40,7 @@ function adminOnly(ids) {
 }
 function summary(s) {
   const accounts = Object.values(s.accounts), linked = accounts.filter(a => a.profileId).length;
-  return `Game: ${s.phase}\nRegistered accounts: ${accounts.length}\nLinked accounts: ${linked}\nPending accounts: ${accounts.length - linked}\nSurvey profiles: ${s.profiles.length}\nPairs: ${s.pairs.length}\nUnpaired profiles: ${s.profiles.length - s.pairs.length * 2}\nPairings approved: ${s.pairingReady ? 'yes' : 'no'}\nCompatibility: ${s.compatibility ? 'uploaded' : 'missing'}\nHint passwords configured: ${Object.keys(s.hintSecrets).length}/5`;
+  return `Game: ${s.phase}\nRegistered accounts: ${accounts.length}\nLinked accounts: ${linked}\nPending accounts: ${accounts.length - linked}\nSurvey profiles: ${s.profiles.length}\nPairs: ${s.pairs.length}\nUnpaired profiles: ${s.profiles.length - s.pairs.length * 2}\nPairings approved: ${s.pairingReady ? 'yes' : 'no'}\nMatching: equal MBTI weights\nHint passwords configured: ${Object.keys(s.hintSecrets).length}/5`;
 }
 function pairPreview(s) {
   const byId = id => s.profiles.find(p => p.id === id);
@@ -99,7 +98,7 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
   });
   const menu = ctx => ctx.reply('ACACIA admin console — use /help for all commands.', { reply_markup: { inline_keyboard: [
     [{ text: 'Overview', callback_data: 'summary' }, { text: 'Registered accounts', callback_data: 'accounts' }],
-    [{ text: 'Import survey CSV', callback_data: 'import' }, { text: 'Upload MBTI scores', callback_data: 'compatibility' }],
+    [{ text: 'Import survey CSV', callback_data: 'import' }],
     [{ text: 'Generate pairs', callback_data: 'generate' }, { text: 'Review pairs', callback_data: 'pairs' }],
     [{ text: 'Approve pairs', callback_data: 'approve' }, { text: 'Launch preview', callback_data: 'launch' }],
     [{ text: 'Broadcast help', callback_data: 'broadcasthelp' }, { text: 'Delivery results', callback_data: 'jobs' }]
@@ -113,7 +112,7 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
       await replyLong(ctx, rows.map(a => `${a.id} @${a.username || '(no handle)'} — ${s.profiles.find(p => p.id === a.profileId)?.code || 'pending profile'}`).join('\n') || 'No accounts.');
     },
     import: ctx => { uploads.set(String(ctx.from.id), 'roster'); return ctx.reply('Upload the survey .csv file. Existing registrations will be preserved.'); },
-    compatibility: ctx => { uploads.set(String(ctx.from.id), 'compatibility'); return ctx.reply('Upload the symmetric 16×16 MBTI .csv score matrix.'); },
+    compatibility: ctx => ctx.reply('MBTI scoring is disabled. All MBTI types are treated equally; use /generate without uploading a matrix.'),
     generate: async ctx => { await game.generate(ctx.from.id); await replyLong(ctx, pairPreview(store.read())); },
     pairs: ctx => replyLong(ctx, pairPreview(store.read())),
     approve: async ctx => { await game.approve(ctx.from.id); await ctx.reply('Current pairings approved. Use /launch to review and start later.'); },
@@ -188,12 +187,12 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
   admin.on('document', async ctx => {
     try {
       const mode = uploads.get(String(ctx.from.id));
-      if (!mode) return ctx.reply('Use /import or /compatibility before uploading a CSV.');
+      if (!mode) return ctx.reply('Use /import before uploading a survey CSV.');
       const text = await downloadCsv(ctx);
       if (mode === 'roster') {
         const profiles = await parseRoster(text), token = await game.stage(ctx.from.id, 'roster', { profiles });
         await ctx.reply(`Validated ${profiles.length} profiles. This replaces the draft survey roster and clears draft pairings; Telegram registrations remain. Confirm: /confirm ${token}`);
-      } else { await game.compatibility(ctx.from.id, await parseCompatibility(text)); await ctx.reply('Compatibility scores saved. Generate pairings again.'); }
+      }
       uploads.delete(String(ctx.from.id));
     } catch (error) { await replyLong(ctx, error.response || error.name === 'TypeError' ? 'CSV download failed.' : error.message.slice(0, 3500)); }
   });

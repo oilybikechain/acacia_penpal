@@ -21,7 +21,7 @@ async function setup(t) {
 }
 async function importProfiles(game, profiles) { await game.confirm('admin', await game.stage('admin','roster',{ profiles })); }
 async function prepare(game, profiles = [profile(0), profile(1)]) {
-  await importProfiles(game, profiles); await game.compatibility('admin', table()); await game.generate('admin');
+  await importProfiles(game, profiles); await game.generate('admin');
   await game.approve('admin');
   for (const hint of ['house','major','year','gender','name']) await game.setHint('admin', hint, `secret_${hint}`);
 }
@@ -102,41 +102,58 @@ test('codes are unique strings with correct private mapping, support leading zer
 
 test('mutual preferences and different houses are strict, with impossible/odd rosters waitlisted', () => {
   const profiles = assignCodes([profile(0),profile(1,{preference:'Female'}),profile(2),profile(3),profile(4)]);
-  const pairs=match(profiles,table());
+  const pairs=match(profiles);
   for(const pair of pairs) assert.ok(compatible(...pair.map(id=>profiles.find(p=>p.id===id))));
   assert.ok(pairs.length<=2);
-  assert.equal(match(assignCodes([profile(0),profile(1,{house:'Aeon'})]),table()).length,0);
-  assert.equal(match(assignCodes([profile(0),profile(1,{preference:'Female'})]),table()).length,0);
+  assert.equal(match(assignCodes([profile(0),profile(1,{house:'Aeon'})])).length,0);
+  assert.equal(match(assignCodes([profile(0),profile(1,{preference:'Female'})])).length,0);
 });
 
-function optimum(profiles, scores) {
+function optimum(profiles) {
   function solve(remaining) {
-    if (!remaining.length) return [0,0];
+    if (!remaining.length) return 0;
     const [a,...rest]=remaining;
     let best=solve(rest);
     for(let i=0;i<rest.length;i++) if(compatible(a,rest[i])) {
-      const [count,score]=solve(rest.filter((_,j)=>j!==i));
-      const candidate=[count+1,score+scores[a.mbti][rest[i].mbti]];
-      if(candidate[0]>best[0] || (candidate[0]===best[0] && candidate[1]>best[1])) best=candidate;
+      const candidate=1+solve(rest.filter((_,j)=>j!==i));
+      best=Math.max(best,candidate);
     }
     return best;
   }
   return solve(profiles);
 }
-test('weighted blossom agrees with exhaustive matching on 120 varied small general graphs', () => {
+test('equal MBTI matching agrees with exhaustive matching on 120 varied small general graphs', () => {
   let seed=12345; const random=n=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%n;};
   for(let run=0;run<120;run++) {
-    const scores=table();
-    for(let a=0;a<16;a++) for(let b=a;b<16;b++) scores[TYPES[a]][TYPES[b]]=scores[TYPES[b]][TYPES[a]]=random(101);
     const profiles=assignCodes(Array.from({length:3+random(6)},(_,i)=>profile(i,{house:HOUSES[random(5)],gender:random(2)?'Male':'Female',preference:['Any','Male','Female'][random(3)]})));
-    const pairs=match(profiles,scores,random), seen=new Set(); let total=0;
+    const pairs=match(profiles,random), seen=new Set();
     for(const [aId,bId] of pairs) {
       assert.ok(!seen.has(aId)&&!seen.has(bId)); seen.add(aId);seen.add(bId);
       const a=profiles.find(p=>p.id===aId), b=profiles.find(p=>p.id===bId);
-      assert.ok(compatible(a,b)); total+=scores[a.mbti][b.mbti];
+      assert.ok(compatible(a,b));
     }
-    assert.deepEqual([pairs.length,total],optimum(profiles,scores));
+    assert.equal(pairs.length,optimum(profiles));
   }
+});
+
+test('nested blossom expansion handles a valid five-person roster', () => {
+  const people=assignCodes([profile(0),profile(1,{preference:'Female'}),profile(2),profile(3),profile(4)]);
+  let seed=17;
+  const rng=n=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%n;};
+  const pairs=match(people,rng);
+  assert.equal(pairs.length,optimum(people));
+  for (const pair of pairs) assert.ok(compatible(...pair.map(id=>people.find(p=>p.id===id))));
+});
+
+test('MBTI answers and legacy saved scores do not affect matching', async t => {
+  const {game,store}=await setup(t);
+  const people=assignCodes(Array.from({length:8},(_,i)=>profile(i)));
+  const rng=()=>{let seed=42;return n=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%n;};};
+  assert.deepEqual(match(people,rng()),match(people.map(p=>({...p,mbti:'INTJ'})),rng()));
+  await importProfiles(game,[profile(0),profile(1)]);
+  await store.update(s=>{s.compatibility={broken:'obsolete table'};});
+  await game.generate('admin');
+  assert.equal(store.read().pairs.length,1);
 });
 
 test('launch is explicit, freezes assignments, and supports late registration without identity leaks', async t => {
@@ -183,7 +200,7 @@ test('broadcast includes accounts without CSV; confirmations are scoped, single 
   assert.equal(Object.values(store.read().jobs)[0].items.length,2);
   await assert.rejects(game.confirm('admin',token),/missing/);
   const stale=await game.stage('admin','roster',{profiles:[profile(0)]});
-  await game.compatibility('admin',table());
+  await game.confirm('another-admin',await game.stage('another-admin','roster',{profiles:[profile(0)]}));
   await assert.rejects(game.confirm('admin',stale),/changed/);
 });
 
