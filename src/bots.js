@@ -19,7 +19,8 @@ const ADMIN_HELP = `ACACIA admin console
 /sethint <house|major|year|gender|name> <password> — configure a distinct hint password
 /launch — preview game launch
 /pause, /resume, /end — control the game
-/broadcast <text> — preview an announcement to all registered accounts
+/broadcast <text> — preview text, or reply to a photo with an optional caption
+/broadcast — upload a single photo next, with an optional caption
 /jobs — delivery results
 /retry <job_id> — retry failed deliveries only
 /retryuncertain <job_id> — explicitly retry uncertain deliveries; duplicates are possible
@@ -128,7 +129,7 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
       });
       return replyLong(ctx, lines.join('\n') || 'No delivery jobs.');
     },
-    broadcasthelp: ctx => ctx.reply('Use /broadcast <announcement text> to preview a message to all registered accounts, including those waiting for survey profiles.')
+    broadcasthelp: ctx => ctx.reply('Use /broadcast <announcement text> for text. For an image, send /broadcast then upload a single photo with an optional caption, or reply to a photo with /broadcast [caption]. Photo captions can contain up to 1024 characters. Review the preview, then /confirm to send to all registered accounts, including those waiting for survey profiles. Use /cancel to discard.')
   };
   for (const [name, operation] of Object.entries(operations)) command(name, operation);
   admin.action(/^(summary|accounts|import|compatibility|generate|pairs|approve|launch|jobs|broadcasthelp)$/, async ctx => {
@@ -158,10 +159,23 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
   });
   for (const [name, phase] of [['pause','paused'],['resume','running'],['end','ended']])
     command(name, async ctx => { await game.phase(ctx.from.id, phase); await ctx.reply(`Game ${phase}.`); });
-  command('broadcast', async ctx => {
-    const text = args(ctx), token = await game.stage(ctx.from.id, 'broadcast', { text });
-    await replyLong(ctx, `PREVIEW — currently ${Object.keys(store.read().accounts).length} registered recipients; accounts registering before confirmation will also be included.\n\n${text}`);
+  const previewBroadcast = async (ctx, text, message) => {
+    if (message?.media_group_id) throw new Error('Broadcast supports one photo at a time. Send a single photo instead of an album.');
+    const photo = message?.photo?.at(-1);
+    if (photo?.file_size > 10 * 1024 * 1024) throw new Error('Broadcast photos must be at most 10 MB');
+    const token = await game.stage(ctx.from.id, 'broadcast', { text, ...(photo ? { photo: photo.file_id } : {}) });
+    uploads.delete(String(ctx.from.id));
+    await replyLong(ctx, `PREVIEW — currently ${Object.keys(store.read().accounts).length} registered recipients; accounts registering before confirmation will also be included.${photo ? '' : `\n\n${text}`}`);
+    if (photo) await ctx.replyWithPhoto(photo.file_id, { caption: text });
     await ctx.reply(`Send this announcement: /confirm ${token}`);
+  };
+  command('broadcast', async ctx => {
+    const text = args(ctx), replied = ctx.message.reply_to_message;
+    if (replied?.photo?.length) return previewBroadcast(ctx, text || replied.caption || '', replied);
+    if (text) return previewBroadcast(ctx, text);
+    await store.update(s => { delete s.pending[String(ctx.from.id)]; });
+    uploads.set(String(ctx.from.id), 'broadcast');
+    await ctx.reply('Upload a single photo with an optional caption (up to 1024 characters). You will receive a preview before confirming. Use /cancel to discard.');
   });
   command('confirm', async ctx => { await ctx.reply(await game.confirm(ctx.from.id, args(ctx).trim())); delivery.kick()?.catch(reportWorkerError); });
   command('cancel', async ctx => {
@@ -184,10 +198,17 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     await ctx.reply(`Backup sent. Reset clears survey profiles, links, assignments, hints, and jobs while preserving registered Telegram accounts. Confirm: /confirm ${token}`);
   });
   command('audit', ctx => replyLong(ctx, store.read().audit.slice(-40).map(a => `${a.at} ${a.actor}: ${a.action}`).join('\n') || 'No management actions.'));
+  admin.on('photo', async ctx => {
+    try {
+      if (uploads.get(String(ctx.from.id)) !== 'broadcast') return ctx.reply('Use /broadcast before uploading a photo, or reply to this photo with /broadcast [caption].');
+      await previewBroadcast(ctx, ctx.message.caption || '', ctx.message);
+    } catch (error) { await replyLong(ctx, error.response || error.name === 'AbortError' || error.name === 'TypeError' ? 'Photo preview failed. Try /broadcast again.' : error.message.slice(0, 3500)); }
+  });
   admin.on('document', async ctx => {
     try {
       const mode = uploads.get(String(ctx.from.id));
       if (!mode) return ctx.reply('Use /import before uploading a survey CSV.');
+      if (mode === 'broadcast') return ctx.reply('Please send the image as a photo, rather than a file. Use /cancel to discard.');
       const text = await downloadCsv(ctx);
       if (mode === 'roster') {
         const profiles = await parseRoster(text), token = await game.stage(ctx.from.id, 'roster', { profiles });

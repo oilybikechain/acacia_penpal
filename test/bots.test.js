@@ -15,6 +15,15 @@ function message(id,text,username='person_0',type='private') {
   const entity=text.startsWith('/')?[{type:'bot_command',offset:0,length:text.split(' ')[0].length}]:[];
   return {update_id:updateId++,message:{message_id:updateId,date:1,chat:{id,type},from:{id,username,first_name:'Test'},text,entities:entity}};
 }
+function photoMessage(id,caption='',extra={}) {
+  const update=message(id,'');
+  delete update.message.text; delete update.message.entities;
+  Object.assign(update.message,{caption,photo:[
+    {file_id:'admin-small',width:90,height:90,file_size:100},
+    {file_id:'admin-large',width:800,height:600,file_size:1000}
+  ]},extra);
+  return update;
+}
 async function setup(t) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'acacia-bot-'));
   t.after(()=>fs.rm(dir,{recursive:true,force:true}));
@@ -104,6 +113,79 @@ test('admin broadcast preview/confirmation includes CSV-less registered accounts
   const job=Object.values(store.read().jobs)[0];
   assert.equal(job.items[0].userId,'1');assert.equal(job.items[0].text,'Welcome to ACACIA!');
   assert.ok(calls.some(c=>c.payload?.text?.includes('PREVIEW')));
+});
+test('photo broadcast upload previews the largest photo and queues only after confirmation',async t=>{
+  const {participant,admin,store,calls}=await setup(t);
+  await participant.handleUpdate(message(1,'/start'));
+  await admin.handleUpdate(message(99,'/broadcast'));
+  assert.match(calls.at(-1).payload.text,/Upload a single photo/);
+  await admin.handleUpdate(photoMessage(99,'Welcome to ACACIA!'));
+  const {token,payload}=store.read().pending['99'];
+  assert.deepEqual(payload,{text:'Welcome to ACACIA!',photo:'admin-large'});
+  assert.deepEqual(Object.values(store.read().jobs),[]);
+  const preview=calls.find(c=>c.method==='sendPhoto');
+  assert.equal(preview.payload.photo,'admin-large');
+  assert.equal(preview.payload.caption,'Welcome to ACACIA!');
+  assert.equal(preview.payload.chat_id,99);
+  await participant.handleUpdate(message(2,'/start','late_account'));
+  await admin.handleUpdate(message(99,`/confirm ${token}`));
+  const job=Object.values(store.read().jobs)[0];
+  assert.equal(job.photo,'admin-large');
+  assert.deepEqual(job.items.map(i=>[i.userId,i.text]),[['1','Welcome to ACACIA!'],['2','Welcome to ACACIA!']]);
+  await admin.handleUpdate(message(99,`/confirm ${token}`));
+  assert.equal(Object.keys(store.read().jobs).length,1);
+});
+test('replying to a photo preserves, overrides, or omits its caption',async t=>{
+  const {admin,store,calls}=await setup(t);
+  for (const [command,original,expected] of [
+    ['/broadcast','Original caption','Original caption'],
+    ['/broadcast Replacement caption','Original caption','Replacement caption'],
+    ['/broadcast','','']
+  ]) {
+    const update=message(99,command);
+    update.message.reply_to_message=photoMessage(99,original).message;
+    await admin.handleUpdate(update);
+    assert.deepEqual(store.read().pending['99'].payload,{text:expected,photo:'admin-large'});
+    assert.equal(calls.filter(c=>c.method==='sendPhoto').at(-1).payload.caption,expected);
+  }
+  assert.equal(Object.keys(store.read().jobs).length,0);
+});
+test('photo broadcasts enforce admin/private access and cancellation',async t=>{
+  const {admin,store,calls}=await setup(t);
+  await admin.handleUpdate(message(99,'/broadcast'));
+  await admin.handleUpdate(photoMessage(1,'Unauthorised'));
+  assert.equal(calls.at(-1).payload.text,'Not authorised.');
+  assert.deepEqual(store.read().pending,{});
+  const group=photoMessage(99); group.message.chat.type='group';
+  await admin.handleUpdate(group);
+  assert.deepEqual(store.read().pending,{});
+  await admin.handleUpdate(message(99,'/cancel'));
+  await admin.handleUpdate(photoMessage(99));
+  assert.match(calls.at(-1).payload.text,/Use \/broadcast/);
+  assert.deepEqual(store.read().pending,{});
+  await admin.handleUpdate(message(99,'/broadcast'));
+  await admin.handleUpdate(photoMessage(99));
+  const {token}=store.read().pending['99'];
+  await admin.handleUpdate(message(99,'/cancel'));
+  await admin.handleUpdate(message(99,`/confirm ${token}`));
+  assert.equal(Object.keys(store.read().jobs).length,0);
+});
+test('photo upload rejects albums, oversized photos, files, and overlong captions before staging',async t=>{
+  const {admin,store,calls}=await setup(t);
+  await admin.handleUpdate(message(99,'/broadcast'));
+  await admin.handleUpdate(photoMessage(99,'',{media_group_id:'album'}));
+  assert.match(calls.at(-1).payload.text,/single photo/);
+  await admin.handleUpdate(photoMessage(99,'',{photo:[{file_id:'huge',file_size:11*1024*1024}]}));
+  assert.match(calls.at(-1).payload.text,/10 MB/);
+  const doc=message(99,'');delete doc.message.text;
+  doc.message.document={file_id:'image',file_name:'image.jpg'};
+  await admin.handleUpdate(doc);
+  assert.match(calls.at(-1).payload.text,/send the image as a photo/);
+  await admin.handleUpdate(photoMessage(99,'x'.repeat(1025)));
+  assert.match(calls.at(-1).payload.text,/1024/);
+  assert.deepEqual(store.read().pending,{});
+  await admin.handleUpdate(photoMessage(99,'x'.repeat(1024)));
+  assert.equal(store.read().pending['99'].payload.text.length,1024);
 });
 test('CSV download validates extensions, declared size, and streamed size',async()=>{
   const ctx={message:{document:{file_name:'survey.csv',file_size:10,file_id:'file'}},telegram:{getFileLink:async()=>new URL('https://example.com/file')}};

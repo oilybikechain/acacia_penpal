@@ -204,6 +204,23 @@ test('broadcast includes accounts without CSV; confirmations are scoped, single 
   await assert.rejects(game.confirm('admin',stale),/changed/);
 });
 
+test('broadcast validates text and photo captions and preserves photo previews across restart', async t => {
+  const {game,store,dir}=await setup(t);
+  for (const payload of [{}, {text:''}, {text:'x'.repeat(4001)}, {text:42}])
+    await assert.rejects(game.stage('admin','broadcast',payload),/1–4000/);
+  for (const photo of ['',null,42])
+    await assert.rejects(game.stage('admin','broadcast',{text:'Caption',photo}),/photo is invalid/);
+  await assert.rejects(game.stage('admin','broadcast',{text:'x'.repeat(1025),photo:'admin-photo'}),/1024/);
+  await game.register({id:1});
+  const token=await game.stage('admin','broadcast',{text:'',photo:'admin-photo'});
+  assert.equal(Object.keys(store.read().jobs).length,0);
+  const reloaded=await new Store(dir).init();
+  await new Game(reloaded).confirm('admin',token);
+  const job=Object.values(reloaded.read().jobs)[0];
+  assert.equal(job.photo,'admin-photo');
+  assert.equal(job.items[0].text,'');
+});
+
 test('draft edits keep identity binding and enforce constraints; reset preserves registrations', async t=>{
   const {game,store}=await setup(t); await prepare(game); await game.register({id:1,username:'person_0'});
   const original=store.read().profiles[0];

@@ -63,7 +63,14 @@ class Game {
         if (action === 'roster') draft(s);
         if (action === 'launch') this.checkLaunch(s);
       }
-      if (action === 'broadcast' && (!payload.text || payload.text.length > 4000)) throw new Error('Broadcast must contain 1–4000 characters');
+      if (action === 'broadcast') {
+        if (payload.photo !== undefined && (typeof payload.photo !== 'string' || !payload.photo)) throw new Error('Broadcast photo is invalid');
+        if (payload.photo) {
+          if (typeof payload.text !== 'string' || payload.text.length > 1024) throw new Error('Photo captions must contain at most 1024 characters');
+        } else if (typeof payload.text !== 'string' || !payload.text || payload.text.length > 4000) {
+          throw new Error('Broadcast must contain 1–4000 characters');
+        }
+      }
       const token = randomBytes(8).toString('hex');
       s.pending[String(actor)] = { token, action, payload, fingerprint: fingerprint(s), expires: Date.now() + 15 * 60_000 };
       return token;
@@ -105,7 +112,9 @@ class Game {
         });
         result = `Game started. Delivery job: ${createJob(s, 'launch', recipients, a => participantStatus(s, a.id))}`;
       } else if (action === 'broadcast') {
-        result = `Broadcast queued. Delivery job: ${createJob(s, 'broadcast', Object.values(s.accounts), payload.text)}`;
+        const id = createJob(s, 'broadcast', Object.values(s.accounts), payload.text);
+        if (payload.photo) s.jobs[id].photo = payload.photo;
+        result = `Broadcast queued. Delivery job: ${id}`;
       } else if (action === 'reset') {
         if (Object.values(s.jobs).some(j => j.items.some(i => ['pending','sending'].includes(i.status))))
           throw new Error('Wait for delivery jobs to finish before resetting');

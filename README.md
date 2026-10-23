@@ -40,6 +40,8 @@ Admins can use `/help` for the full command list. Main controls:
 | Command | Behaviour |
 |---|---|
 | `/broadcast <text>` | Preview and confirm text to all registered accounts, including pending and waitlisted accounts. Recipients are captured on confirmation. |
+| `/broadcast` | Upload a single photo next, with an optional caption. Review the photo preview, then `/confirm <token>` to send. |
+| `/broadcast [caption]` (reply to a photo) | Preview that photo with the supplied caption, or keep its original caption when omitted. |
 | `/jobs` | Show delivery counts per launch, assignment, or broadcast job. |
 | `/retry <job_id>` | Retry failed deliveries, excluding successful and uncertain sends. |
 | `/retryuncertain <job_id>` | Explicitly retry uncertain sends too; duplicates are possible. |
@@ -52,6 +54,8 @@ Admins can use `/help` for the full command list. Main controls:
 | `/cancel` | Cancel the latest confirmation or upload request. |
 
 Confirmations expire in 15 minutes and belong to the requesting admin. Game configuration changes invalidate pending confirmations. Pairings and survey data can change only before launch; start a new round with an explicit reset.
+
+Photo broadcasts support one photo up to 10 MB and a caption up to 1024 characters. Send the image as a Telegram photo, not a file or album. Use `/cancel` to discard an upload request or preview. Images are transferred from the admin bot to the participant bot during delivery; photo jobs use the same persistent results and retry commands as text broadcasts.
 
 ## CSV formats
 

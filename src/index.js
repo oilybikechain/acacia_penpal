@@ -30,6 +30,7 @@ async function main() {
     const { participant, admin } = createBots({ game, store, delivery, participantToken: PARTICIPANT_BOT_TOKEN,
       adminToken: ADMIN_BOT_TOKEN, adminIds: new Set(ids) });
     delivery.telegram = participant.telegram;
+    delivery.sourceTelegram = admin.telegram;
     await delivery.recover();
     await Promise.all([initialiseBot(participant), initialiseBot(admin)]);
     delivery.kick()?.catch(() => console.error('Delivery worker stopped. Restart to recover.'));
