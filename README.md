@@ -61,6 +61,7 @@ Admins can use `/help` for the full command list. Main controls:
 | `/pause`, `/resume` | Suspend or reopen hint access. Assignments remain readable. |
 | `/end` | Close hints permanently for this round; preserve assignment lookup. |
 | `/export` | Download a private roster CSV with codes, linked account IDs, and penpal codes. |
+| `/exportpairs` | Download one row per pairing with both names, houses, four-digit ID codes, and codenames. |
 | `/backup` | Download a complete private JSON snapshot, including pending actions and password hashes. |
 | `/audit` | Recent management actions, without password text. |
 | `/reset` | Download a backup, then confirm clearing the game while preserving registered Telegram accounts. Wait for queued deliveries to finish first. |

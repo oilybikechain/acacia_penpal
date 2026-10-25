@@ -6,7 +6,7 @@ const path = require('node:path');
 const { Telegram } = require('telegraf');
 const { Store } = require('../src/store');
 const { Game } = require('../src/game');
-const { createBots, downloadCsv, PARTICIPANT_HELP } = require('../src/bots');
+const { createBots, downloadCsv, PARTICIPANT_HELP, pairCsv } = require('../src/bots');
 const { initialiseBot, poll } = require('../src/polling');
 const { parseRoster, csv, FIELDS } = require('../src/imports');
 
@@ -161,6 +161,28 @@ test('batch commands import a CSV, preserve pairs, and scope text and photo broa
   assert.equal(store.read().pending['99'], undefined);
   await admin.handleUpdate(message(1, '/broadcastbatch late8 Intruder'));
   assert.equal(calls.at(-1).payload.text, 'Not authorised.');
+});
+
+test('pair CSV has one row per pairing with names, houses, ID codes and codenames', async t => {
+  const {admin,game,store,calls}=await setup(t);
+  const profiles=await parseRoster(await fs.readFile(path.join(__dirname,'fixtures','forms-signups.csv'),'utf8'));
+  await game.confirm('99',await game.stage('99','roster',{profiles}));
+  await game.generate('99');
+  const data=pairCsv(store.read());
+  const [header,row]=data.split('\r\n');
+  assert.equal(header,'"pair","person_1_name","person_1_house","person_1_id","person_1_codename","person_2_name","person_2_house","person_2_id","person_2_codename"');
+  assert.match(row,/Alex Example|Jamie Example/);
+  for (const p of store.read().profiles) {
+    assert.match(data,new RegExp(p.name));
+    assert.match(data,new RegExp(p.house));
+    assert.match(data,new RegExp(p.code));
+    assert.match(data,new RegExp(p.nickname));
+  }
+  await admin.handleUpdate(message(99,'/exportpairs'));
+  const call=calls.at(-1);
+  assert.equal(call.method,'sendDocument');
+  assert.equal(call.payload.document.filename,'acacia-pairings.csv');
+  assert.equal(call.payload.document.source.toString(),data);
 });
 
 test('admin commands and menus require numeric ID authorization',async t=>{

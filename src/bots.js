@@ -30,6 +30,7 @@ const ADMIN_HELP = `ACACIA admin console
 /retry <job_id> — retry failed deliveries only
 /retryuncertain <job_id> — explicitly retry uncertain deliveries; duplicates are possible
 /export — roster and assignment CSV
+/exportpairs — paired names, houses, ID codes, and codenames CSV
 /backup — complete private game backup, including password hashes
 /audit — recent management actions
 /reset — download backup, then confirm game reset; registrations are preserved
@@ -60,6 +61,19 @@ function pairPreview(s, heading = summary(s)) {
   lines.push('\nPENDING ACCOUNTS');
   for (const a of Object.values(s.accounts).filter(a => !a.profileId)) lines.push(`${a.id} @${a.username || '(no handle)'} — profile not linked`);
   return lines.join('\n');
+}
+function pairCsv(s) {
+  const byId = id => s.profiles.find(p => p.id === id);
+  const fields = ['pair', 'person_1_name', 'person_1_house', 'person_1_id', 'person_1_codename',
+    'person_2_name', 'person_2_house', 'person_2_id', 'person_2_codename'];
+  const records = s.pairs.map(([aId, bId], index) => {
+    const a = byId(aId), b = byId(bId);
+    if (!a || !b) throw new Error('A saved pairing references a missing profile');
+    return { pair: index + 1,
+      person_1_name: a.name, person_1_house: a.house, person_1_id: a.code, person_1_codename: a.nickname,
+      person_2_name: b.name, person_2_house: b.house, person_2_id: b.code, person_2_codename: b.nickname };
+  });
+  return csv(records, fields);
 }
 async function downloadCsv(ctx, fetcher = fetch) {
   const doc = ctx.message.document;
@@ -236,6 +250,9 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     const records = s.profiles.map(p => ({ ...p, account_id: Object.values(s.accounts).find(a => a.profileId === p.id)?.id || '', penpal_code: partnerFor(s, p.id)?.code || '' }));
     return ctx.replyWithDocument({ source: Buffer.from(csv(records, [...FIELDS, 'code', 'account_id', 'penpal_code'])), filename: 'acacia-roster.csv' });
   });
+  command('exportpairs', ctx => ctx.replyWithDocument({
+    source: Buffer.from(pairCsv(store.read())), filename: 'acacia-pairings.csv'
+  }));
   const backup = ctx => ctx.replyWithDocument({ source: Buffer.from(JSON.stringify(store.read(), null, 2)), filename: `acacia-backup-${Date.now()}.json` });
   command('backup', backup);
   command('reset', async ctx => {
@@ -272,4 +289,4 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
   return { participant, admin };
 }
 function reportWorkerError() { console.error('Delivery worker failed. Check local storage and restart to recover queued messages.'); }
-module.exports = { createBots, adminOnly, privateOnly, downloadCsv, PARTICIPANT_HELP, ADMIN_HELP, summary, pairPreview };
+module.exports = { createBots, adminOnly, privateOnly, downloadCsv, PARTICIPANT_HELP, ADMIN_HELP, summary, pairPreview, pairCsv };
