@@ -1,6 +1,7 @@
 const { Telegraf } = require('telegraf');
 const { parseRoster, csv, FIELDS } = require('./imports');
 const { participantStatus, partnerFor } = require('./game');
+const { textChunks } = require('./messages');
 
 const PARTICIPANT_HELP = 'Welcome to ACACIA Penpal!\n/start — register, even before survey data is uploaded\n/status — check your registration or penpal assignment\n/hint <password> — unlock a penpal hint during the game\n/help — show this help\n\nThe organisers will start the game later. This bot does not relay messages.';
 const ADMIN_HELP = `ACACIA admin console
@@ -33,7 +34,7 @@ const ADMIN_HELP = `ACACIA admin console
 
 function args(ctx) { return (ctx.message?.text || '').replace(/^\/\w+(?:@\w+)?\s*/, ''); }
 async function replyLong(ctx, text) {
-  for (let start = 0; start < text.length; start += 3800) await ctx.reply(text.slice(start, start + 3800));
+  for (const chunk of textChunks(text)) await ctx.reply(chunk.text);
 }
 function privateOnly(ctx, next) { return ctx.chat?.type === 'private' ? next() : Promise.resolve(); }
 function adminOnly(ids) {
@@ -77,9 +78,9 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     bot.use(privateOnly);
     bot.catch(() => console.error('Telegram update failed; update contents omitted.'));
   }
-  participant.start(async ctx => ctx.reply(await game.register(ctx.from)));
+  participant.start(async ctx => replyLong(ctx, await game.register(ctx.from)));
   participant.help(ctx => ctx.reply(PARTICIPANT_HELP));
-  participant.command('status', ctx => ctx.reply(game.status(ctx.from.id)));
+  participant.command('status', ctx => replyLong(ctx, game.status(ctx.from.id)));
   participant.command('hint', async ctx => {
     const password = args(ctx).trim();
     // Best effort: avoid retaining submitted passwords in chat history.

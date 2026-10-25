@@ -68,7 +68,7 @@ test('survey question headers, BOM, quoted commas/newlines and normalised fields
   const p = profile(0,{note:'Hello, friend!\nI like "cookies".',telegram:'@PERSON_0',mbti:'intj'});
   const data = csv([Object.fromEntries(headers.map((h,i)=>[h,p[FIELDS[i]]]))],headers);
   const [parsed] = await parseRoster('\uFEFF'+data);
-  assert.equal(parsed.note,p.note); assert.equal(parsed.telegram,'person_0'); assert.equal(parsed.mbti,'INTJ');
+  assert.equal(parsed.note,p.note); assert.equal(parsed.telegram,'person_0'); assert.equal(parsed.mbti,'intj');
   await assert.rejects(parseRoster(csv([p,p],FIELDS)),/Duplicate Telegram/);
   await assert.rejects(parseRoster(csv([profile(0,{house:'Unknown'})],FIELDS)),/Invalid house/);
   await assert.rejects(parseRoster('name,name\nA,B'),/Duplicate CSV columns/);
@@ -76,6 +76,16 @@ test('survey question headers, BOM, quoted commas/newlines and normalised fields
   const withMetadata = csv([{'Name':'Responder metadata',...Object.fromEntries(headers.map((h,i)=>[h,p[FIELDS[i]]]))}],['Name',...headers]);
   assert.equal((await parseRoster(withMetadata))[0].name,p.name);
   await assert.rejects(parseRoster(csv([profile(0)],FIELDS).replace('Hello!','"Hello!')),/unterminated/);
+});
+
+test('roster accepts arbitrary or blank MBTI and notes longer than the former row limit', async () => {
+  const note = 'A long introduction, with "quotes" and newlines.\n'.repeat(2000);
+  const people = [profile(0, { mbti: 'Mediator (INFP-T)', note }), profile(1, { mbti: '' }),
+    profile(2, { mbti: 'Unknown'.repeat(30) })];
+  const parsed = await parseRoster(csv(people, FIELDS));
+  assert.deepEqual(parsed.map(p => p.mbti), people.map(p => p.mbti));
+  assert.equal(parsed[0].note, note.trim());
+  assert.equal(match(assignCodes(parsed)).length, 1);
 });
 
 test('MBTI matrix requires every score, symmetry, unique rows, and integers', async () => {

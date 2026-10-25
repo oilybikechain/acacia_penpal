@@ -56,7 +56,7 @@ test('Forms signup CSV supports launch delivery and both participants retrieving
     const profiles=await parseRoster('\uFEFF'+source.replace('I have registered!!',answer));
     assert.equal(profiles.length,2);
     assert.deepEqual(profiles[0],{
-      name:'Alex Example',house:'Aeon',year:'Y1',mbti:'INTJ',major:'Computing',
+      name:'Alex Example',house:'Aeon',year:'Y1',mbti:'intj',major:'Computing',
       gender:'Male',telegram:'alex_example',nickname:'Cookie dough',preference:'Any',
       note:'Hello, penpal! I like books.'
     });
@@ -92,6 +92,16 @@ test('Forms signup CSV supports launch delivery and both participants retrieving
     assert.equal(calls.at(-1).payload.text,expected(own,partner));
   }
   assert.equal(Object.keys(store.read().accounts).length,2);
+  const longNote = 'Hello! '.repeat(2000);
+  await store.update(s => { s.profiles.find(p => p.id === jamie.id).note = longNote; });
+  for (const command of ['/start', '/status']) {
+    const before = calls.length;
+    await participant.handleUpdate(message(1,command,alex.telegram));
+    const texts = calls.slice(before).filter(c => c.method === 'sendMessage').map(c => c.payload.text);
+    assert.ok(texts.length > 1);
+    assert.ok(texts.every(text => text.length <= 3800));
+    assert.equal(texts.join(''), expected(alex, { ...jamie, note: longNote }));
+  }
 });
 
 test('admin commands and menus require numeric ID authorization',async t=>{

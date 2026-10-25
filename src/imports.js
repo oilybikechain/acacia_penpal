@@ -24,7 +24,7 @@ function header(raw) {
   return h;
 }
 async function rows(text, mapHeader = h => h.trim()) {
-  const parser = csvParser({ strict: true, maxRowBytes: 64 * 1024,
+  const parser = csvParser({ strict: true,
     mapHeaders: ({ header }) => header.replace(/^\uFEFF/, '').trim(),
     mapValues: ({ value }) => value.trim() });
   let duplicate = false;
@@ -58,12 +58,11 @@ function validateProfile(raw) {
   const p = {};
   for (const f of FIELDS) {
     p[f] = String(raw[f] || '').trim();
-    if (!p[f]) throw new Error(`Missing ${f}`);
-    if (p[f].length > (f === 'note' ? 1000 : 150)) throw new Error(`${f} is too long`);
+    if (!p[f] && f !== 'mbti') throw new Error(`Missing ${f}`);
+    if (!['note', 'mbti'].includes(f) && p[f].length > 150) throw new Error(`${f} is too long`);
   }
   p.house = canonical(p.house, HOUSES, 'house');
   p.year = canonical(p.year, ['Y1','Y2','Y3','Y4'], 'year');
-  p.mbti = canonical(p.mbti, TYPES, 'MBTI');
   p.gender = canonical(p.gender, ['Male','Female'], 'gender');
   p.preference = canonical(p.preference, ['Any','Male','Female'], 'gender preference');
   p.telegram = handle(p.telegram);

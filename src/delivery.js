@@ -1,4 +1,5 @@
 const { setTimeout: sleep } = require('node:timers/promises');
+const { textChunks } = require('./messages');
 
 async function downloadPhoto(telegram, fileId, fetcher = fetch) {
   const link = await telegram.getFileLink(fileId);
@@ -52,7 +53,13 @@ class Delivery {
           photoFileId = sent?.photo?.at(-1)?.file_id;
         } else {
           sending = true;
-          await this.telegram.sendMessage(claimed.userId, claimed.text, { protect_content: true });
+          for (const chunk of textChunks(claimed.text, claimed.textOffset || 0)) {
+            await this.telegram.sendMessage(claimed.userId, chunk.text, { protect_content: true });
+            await this.store.update(s => {
+              s.jobs[claimed.jobId].items[claimed.index].textOffset = chunk.end;
+            });
+            if (chunk.end < claimed.text.length) await this.sleep(this.delay);
+          }
         }
       }
       catch (error) {

@@ -23,6 +23,25 @@ test('partial failures and retries do not resend successful recipients',async t=
   fail=false;await game.retry('admin',id);await worker.kick();
   assert.deepEqual(calls,['1','2','2']);
 });
+test('long notes are delivered in chunks and retries resume after acknowledged chunks',async t=>{
+  const {store,game,id}=await setup(t), calls=[];
+  const text='x'.repeat(3799)+'🙂'+'A long introductory note.\n'.repeat(500);
+  await store.update(s=>{s.jobs[id].items=[{userId:'1',text,status:'pending',attempts:0}];});
+  let attempt=0;
+  const worker=new Delivery(store,{sendMessage:async(user,chunk)=>{
+    if (++attempt===2) throw {response:{error_code:403}};
+    calls.push(chunk);
+  }},{sleep:async()=>{}});
+  await worker.kick();
+  assert.equal(store.read().jobs[id].items[0].status,'failed');
+  assert.equal(calls[0].length,3799);
+  await game.retry('admin',id);
+  await worker.kick();
+  assert.equal(store.read().jobs[id].items[0].status,'sent');
+  assert.ok(calls.every(chunk=>chunk.length<=3800));
+  assert.equal(calls.join(''),text);
+});
+
 test('rate limiting waits and retries; network ambiguity requires explicit uncertain retry',async t=>{
   const {store,game,id}=await setup(t), waits=[];let attempt=0;
   const worker=new Delivery(store,{sendMessage:async user=>{
