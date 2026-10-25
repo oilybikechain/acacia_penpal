@@ -8,7 +8,7 @@ const { Store } = require('../src/store');
 const { Game } = require('../src/game');
 const { createBots, downloadCsv, PARTICIPANT_HELP } = require('../src/bots');
 const { initialiseBot, poll } = require('../src/polling');
-const { parseRoster } = require('../src/imports');
+const { parseRoster, csv, FIELDS } = require('../src/imports');
 
 let updateId=1;
 function message(id,text,username='person_0',type='private') {
@@ -102,6 +102,64 @@ test('Forms signup CSV supports launch delivery and both participants retrieving
     assert.ok(texts.every(text => text.length <= 3800));
     assert.equal(texts.join(''), expected(alex, { ...jamie, note: longNote }));
   }
+});
+
+test('batch commands import a CSV, preserve pairs, and scope text and photo broadcasts', async t => {
+  const { admin, participant, store, game, calls } = await setup(t);
+  const original = await parseRoster(await fs.readFile(path.join(__dirname, 'fixtures', 'forms-signups.csv'), 'utf8'));
+  await game.confirm('99', await game.stage('99', 'roster', { profiles: original }));
+  await game.generate('99'); await game.approve('99');
+  const oldPairs = store.read().pairs;
+  const newcomers = original.map(p => ({ ...p, telegram: `${p.telegram}_late` }));
+  t.mock.method(admin.telegram, 'getFileLink', async () => new URL('https://example.com/late.csv'));
+  t.mock.method(globalThis, 'fetch', async () => new Response(csv(newcomers, FIELDS)));
+  await admin.handleUpdate(message(1, '/addpeople late8'));
+  assert.equal(calls.at(-1).payload.text, 'Not authorised.');
+  await admin.handleUpdate(message(99, '/addpeople late8'));
+  const document = message(99, '');
+  document.message.document = { file_name: 'late.csv', file_size: 500, file_id: 'csv' };
+  await admin.handleUpdate(document);
+  assert.equal(store.read().profiles.length, 2);
+  assert.equal(store.read().pending['99'].action, 'addpeople');
+  await admin.handleUpdate(message(99, `/confirm ${store.read().pending['99'].token}`));
+  assert.equal(store.read().profiles.length, 4);
+  assert.deepEqual(store.read().pairs, oldPairs);
+  await admin.handleUpdate(message(99, '/batches'));
+  assert.match(calls.at(-1).payload.text, /late8: 2 profiles, 0 registered recipients/);
+  await admin.handleUpdate(message(99, '/pairnew late8'));
+  assert.equal(store.read().pending['99'].action, 'pairnew');
+  await admin.handleUpdate(message(99, '/cancel'));
+  assert.deepEqual(store.read().pairs, oldPairs);
+  await admin.handleUpdate(message(99, '/pairnew late8'));
+  await admin.handleUpdate(message(99, `/confirm ${store.read().pending['99'].token}`));
+  assert.equal(store.read().pairs.length, 2);
+  assert.deepEqual(store.read().pairs[0], oldPairs[0]);
+  await participant.handleUpdate(message(1, '/start', original[0].telegram));
+  await participant.handleUpdate(message(2, '/start', newcomers[0].telegram));
+  await admin.handleUpdate(message(99, '/broadcastbatch late8 Welcome, late joiners!'));
+  assert.match(calls.at(-2).payload.text, /1 registered recipients; batch late8 only \(1 profiles not linked/);
+  assert.equal(Object.keys(store.read().jobs).length, 0);
+  await admin.handleUpdate(message(99, `/confirm ${store.read().pending['99'].token}`));
+  const job = Object.values(store.read().jobs).at(-1);
+  assert.deepEqual(job.items.map(i => i.userId), ['2']);
+  assert.equal(job.items[0].text, 'Welcome, late joiners!');
+  await admin.handleUpdate(message(99, '/broadcastbatch late8'));
+  await admin.handleUpdate(photoMessage(99, 'Instructions'));
+  assert.equal(store.read().pending['99'].payload.batch, 'late8');
+  assert.equal(store.read().pending['99'].payload.photo, 'admin-large');
+  await admin.handleUpdate(message(99, `/confirm ${store.read().pending['99'].token}`));
+  const photoJob = Object.values(store.read().jobs).at(-1);
+  assert.equal(photoJob.photo, 'admin-large');
+  assert.deepEqual(photoJob.items.map(i => i.userId), ['2']);
+  const reply = message(99, '/broadcastbatch late8 Custom caption');
+  reply.message.reply_to_message = photoMessage(99, 'Original caption').message;
+  await admin.handleUpdate(reply);
+  assert.equal(store.read().pending['99'].payload.text, 'Custom caption');
+  assert.equal(store.read().pending['99'].payload.batch, 'late8');
+  await admin.handleUpdate(message(99, '/cancel'));
+  assert.equal(store.read().pending['99'], undefined);
+  await admin.handleUpdate(message(1, '/broadcastbatch late8 Intruder'));
+  assert.equal(calls.at(-1).payload.text, 'Not authorised.');
 });
 
 test('admin commands and menus require numeric ID authorization',async t=>{

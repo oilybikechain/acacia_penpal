@@ -1,6 +1,6 @@
 const { Telegraf } = require('telegraf');
 const { parseRoster, csv, FIELDS } = require('./imports');
-const { participantStatus, partnerFor } = require('./game');
+const { participantStatus, partnerFor, batchProfiles, broadcastRecipients } = require('./game');
 const { textChunks } = require('./messages');
 
 const PARTICIPANT_HELP = 'Welcome to ACACIA Penpal!\n/start — register, even before survey data is uploaded\n/status — check your registration or penpal assignment\n/hint <password> — unlock a penpal hint during the game\n/help — show this help\n\nThe organisers will start the game later. This bot does not relay messages.';
@@ -8,6 +8,9 @@ const ADMIN_HELP = `ACACIA admin console
 /menu — management buttons
 /summary — game and registration counts
 /import — upload a survey CSV next (replaces the draft roster after confirmation)
+/addpeople <batch> — upload a CSV of new people; preserve existing pairs
+/batches — list imported batches and registered recipients
+/pairnew <batch> — preview pairs within a batch, preserving existing pairs
 /list [search] — participant profiles
 /accounts [search] — registered Telegram accounts, including pending accounts
 /edit <code> <field> <value> — correct a draft profile
@@ -22,6 +25,7 @@ const ADMIN_HELP = `ACACIA admin console
 /pause, /resume, /end — control the game
 /broadcast <text> — preview text, or reply to a photo with an optional caption
 /broadcast — upload a single photo next, with an optional caption
+/broadcastbatch <batch> [text] — text/photo announcement to one batch only
 /jobs — delivery results
 /retry <job_id> — retry failed deliveries only
 /retryuncertain <job_id> — explicitly retry uncertain deliveries; duplicates are possible
@@ -44,9 +48,9 @@ function summary(s) {
   const accounts = Object.values(s.accounts), linked = accounts.filter(a => a.profileId).length;
   return `Game: ${s.phase}\nRegistered accounts: ${accounts.length}\nLinked accounts: ${linked}\nPending accounts: ${accounts.length - linked}\nSurvey profiles: ${s.profiles.length}\nPairs: ${s.pairs.length}\nUnpaired profiles: ${s.profiles.length - s.pairs.length * 2}\nPairings approved: ${s.pairingReady ? 'yes' : 'no'}\nMatching: equal MBTI weights\nHint passwords configured: ${Object.keys(s.hintSecrets).length}/5`;
 }
-function pairPreview(s) {
+function pairPreview(s, heading = summary(s)) {
   const byId = id => s.profiles.find(p => p.id === id);
-  const lines = [summary(s), '\nPAIRS — review notes for identifying information before launch'];
+  const lines = [heading, '\nPAIRS — review notes for identifying information before sending'];
   for (const [aId,bId] of s.pairs) {
     const a = byId(aId), b = byId(bId);
     lines.push(`\n${a.code} ${a.name} (${a.nickname}, ${a.house}, ${a.gender}, wants ${a.preference}, ${a.mbti}) ↔ ${b.code} ${b.name} (${b.nickname}, ${b.house}, ${b.gender}, wants ${b.preference}, ${b.mbti})\n${a.nickname}'s note: ${a.note}\n${b.nickname}'s note: ${b.note}`);
@@ -126,7 +130,7 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     jobs: ctx => {
       const lines = Object.values(store.read().jobs).map(j => {
         const counts = j.items.reduce((acc,i) => { acc[i.status] = (acc[i.status] || 0) + 1; return acc; }, {});
-        return `${j.id} ${j.kind}: ${JSON.stringify(counts)} (${j.items.length} total)`;
+        return `${j.id} ${j.kind}${j.batch ? ` [${j.batch}]` : ''}: ${JSON.stringify(counts)} (${j.items.length} total)`;
       });
       return replyLong(ctx, lines.join('\n') || 'No delivery jobs.');
     },
@@ -141,6 +145,30 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     const q = args(ctx).toLowerCase();
     return replyLong(ctx, store.read().profiles.filter(p => `${p.name} ${p.nickname} ${p.code} ${p.telegram}`.toLowerCase().includes(q))
       .map(p => `${p.code} ${p.name} / ${p.nickname} — ${p.house}, ${p.year}, ${p.major}, ${p.mbti}, ${p.gender}, prefers ${p.preference}, @${p.telegram}`).join('\n') || 'No profiles.');
+  });
+  command('addpeople', async ctx => {
+    const batch = args(ctx).trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(batch)) throw new Error('Usage: /addpeople <batch> (1–40 letters, numbers, underscores or hyphens)');
+    if (store.read().phase === 'ended') throw new Error('Game has ended');
+    if (Object.hasOwn(store.read().batches, batch)) throw new Error('Batch already exists. Choose a new batch name.');
+    await store.update(s => { delete s.pending[String(ctx.from.id)]; });
+    uploads.set(String(ctx.from.id), { addBatch: batch });
+    await ctx.reply(`Upload a survey CSV containing only the new people for batch ${batch}. Existing people and pairs will be preserved. You will review and confirm before adding them.`);
+  });
+  command('batches', ctx => {
+    const s = store.read();
+    return replyLong(ctx, Object.keys(s.batches).map(batch => {
+      const profiles = batchProfiles(s, batch);
+      return `${batch}: ${profiles.length} profiles, ${broadcastRecipients(s, batch).length} registered recipients, ${profiles.filter(p => !partnerFor(s, p.id)).length} unpaired`;
+    }).join('\n') || 'No batches. Use /addpeople <batch> to import new people.');
+  });
+  command('pairnew', async ctx => {
+    const batch = args(ctx).trim();
+    const token = await game.stage(ctx.from.id, 'pairnew', { batch });
+    const s = store.read(), pairs = s.pending[String(ctx.from.id)].payload.pairs;
+    const paired = new Set(s.pairs.flat());
+    await replyLong(ctx, pairPreview({ ...s, profiles: batchProfiles(s, batch).filter(p => !paired.has(p.id)), pairs, accounts: {} }, `Batch ${batch} — proposed additional pairs; existing pairs preserved`));
+    await ctx.reply(`PREVIEW — ${pairs.length} new pairs within ${batch}. Existing pairs will be preserved. ${s.phase === 'draft' ? 'Approve and launch later.' : 'Confirmation sends assignments only to newly paired registered participants.'} Confirm: /confirm ${token}`);
   });
   command('edit', async ctx => {
     const [code, field, ...value] = args(ctx).split(/\s+/);
@@ -160,13 +188,15 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
   });
   for (const [name, phase] of [['pause','paused'],['resume','running'],['end','ended']])
     command(name, async ctx => { await game.phase(ctx.from.id, phase); await ctx.reply(`Game ${phase}.`); });
-  const previewBroadcast = async (ctx, text, message) => {
+  const previewBroadcast = async (ctx, text, message, batch) => {
     if (message?.media_group_id) throw new Error('Broadcast supports one photo at a time. Send a single photo instead of an album.');
     const photo = message?.photo?.at(-1);
     if (photo?.file_size > 10 * 1024 * 1024) throw new Error('Broadcast photos must be at most 10 MB');
-    const token = await game.stage(ctx.from.id, 'broadcast', { text, ...(photo ? { photo: photo.file_id } : {}) });
+    const token = await game.stage(ctx.from.id, 'broadcast', { text, ...(batch !== undefined ? { batch } : {}), ...(photo ? { photo: photo.file_id } : {}) });
     uploads.delete(String(ctx.from.id));
-    await replyLong(ctx, `PREVIEW — currently ${Object.keys(store.read().accounts).length} registered recipients; accounts registering before confirmation will also be included.${photo ? '' : `\n\n${text}`}`);
+    const s = store.read(), recipients = broadcastRecipients(s, batch);
+    const audience = batch === undefined ? 'all registered accounts' : `batch ${batch} only (${batchProfiles(s, batch).length - recipients.length} profiles not linked to registered accounts)`;
+    await replyLong(ctx, `PREVIEW — currently ${recipients.length} registered recipients; ${audience}; accounts registering before confirmation will also be included.${photo ? '' : `\n\n${text}`}`);
     if (photo) await ctx.replyWithPhoto(photo.file_id, { caption: text });
     await ctx.reply(`Send this announcement: /confirm ${token}`);
   };
@@ -177,6 +207,18 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     await store.update(s => { delete s.pending[String(ctx.from.id)]; });
     uploads.set(String(ctx.from.id), 'broadcast');
     await ctx.reply('Upload a single photo with an optional caption (up to 1024 characters). You will receive a preview before confirming. Use /cancel to discard.');
+  });
+  command('broadcastbatch', async ctx => {
+    const input = args(ctx).trim(), separator = input.search(/\s/);
+    const batch = separator < 0 ? input : input.slice(0, separator);
+    const text = separator < 0 ? '' : input.slice(separator).trim();
+    batchProfiles(store.read(), batch);
+    const replied = ctx.message.reply_to_message;
+    if (replied?.photo?.length) return previewBroadcast(ctx, text || replied.caption || '', replied, batch);
+    if (text) return previewBroadcast(ctx, text, undefined, batch);
+    await store.update(s => { delete s.pending[String(ctx.from.id)]; });
+    uploads.set(String(ctx.from.id), { broadcastBatch: batch });
+    await ctx.reply(`Upload a single photo with an optional caption for batch ${batch} only. Review and confirm before sending. Use /cancel to discard.`);
   });
   command('confirm', async ctx => { await ctx.reply(await game.confirm(ctx.from.id, args(ctx).trim())); delivery.kick()?.catch(reportWorkerError); });
   command('cancel', async ctx => {
@@ -201,17 +243,22 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
   command('audit', ctx => replyLong(ctx, store.read().audit.slice(-40).map(a => `${a.at} ${a.actor}: ${a.action}`).join('\n') || 'No management actions.'));
   admin.on('photo', async ctx => {
     try {
-      if (uploads.get(String(ctx.from.id)) !== 'broadcast') return ctx.reply('Use /broadcast before uploading a photo, or reply to this photo with /broadcast [caption].');
-      await previewBroadcast(ctx, ctx.message.caption || '', ctx.message);
+      const mode = uploads.get(String(ctx.from.id));
+      if (mode !== 'broadcast' && mode?.broadcastBatch === undefined) return ctx.reply('Use /broadcast or /broadcastbatch <batch> before uploading a photo.');
+      await previewBroadcast(ctx, ctx.message.caption || '', ctx.message, mode?.broadcastBatch);
     } catch (error) { await replyLong(ctx, error.response || error.name === 'AbortError' || error.name === 'TypeError' ? 'Photo preview failed. Try /broadcast again.' : error.message.slice(0, 3500)); }
   });
   admin.on('document', async ctx => {
     try {
       const mode = uploads.get(String(ctx.from.id));
       if (!mode) return ctx.reply('Use /import before uploading a survey CSV.');
-      if (mode === 'broadcast') return ctx.reply('Please send the image as a photo, rather than a file. Use /cancel to discard.');
+      if (mode === 'broadcast' || mode?.broadcastBatch !== undefined) return ctx.reply('Please send the image as a photo, rather than a file. Use /cancel to discard.');
       const text = await downloadCsv(ctx);
-      if (mode === 'roster') {
+      if (mode?.addBatch !== undefined) {
+        const profiles = await parseRoster(text), token = await game.stage(ctx.from.id, 'addpeople', { profiles, batch: mode.addBatch });
+        await replyLong(ctx, `PREVIEW — add ${profiles.length} people to batch ${mode.addBatch}. Existing profiles and pairs will be preserved.\n${profiles.map(p => `${p.name} / ${p.nickname} — @${p.telegram}`).join('\n')}`);
+        await ctx.reply(`Confirm: /confirm ${token}`);
+      } else if (mode === 'roster') {
         const profiles = await parseRoster(text), token = await game.stage(ctx.from.id, 'roster', { profiles });
         await ctx.reply(`Validated ${profiles.length} profiles. This replaces the draft survey roster and clears draft pairings; Telegram registrations remain. Confirm: /confirm ${token}`);
       }

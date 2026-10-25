@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 function freshState() {
-  return { version: 1, revision: 0, accounts: {}, profiles: [], compatibility: null,
+  return { version: 1, revision: 0, accounts: {}, profiles: [], batches: {}, compatibility: null,
     pairs: [], pairingReady: false, phase: 'draft', hintSecrets: {}, jobs: {}, pending: {}, audit: [], offsets: {} };
 }
 
@@ -13,6 +13,7 @@ class Store {
     try { this.state = JSON.parse(await fs.readFile(path.join(this.directory, 'state.json'), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; this.state = freshState(); }
     if (this.state.version !== 1) throw new Error('Unsupported storage version');
+    this.state.batches ||= {};
     return this;
   }
   read() { return structuredClone(this.state); }

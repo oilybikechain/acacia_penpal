@@ -43,6 +43,113 @@ test('registration works before CSV; import links accounts without erasing pendi
   assert.equal(reloaded.read().accounts['101'].profileId,s.profiles[0].id);
 });
 
+test('eight late joiners append and pair after launch without changing existing assignments', async t => {
+  const { store, game, dir } = await setup(t);
+  await prepare(game);
+  await game.register({ id: 101, username: 'person_0' });
+  await game.confirm('admin', await game.stage('admin', 'launch'));
+  const before = store.read();
+  for (let i = 2; i < 9; i++) await game.register({ id: 100 + i, username: `person_${i}` });
+  const profiles = Array.from({ length: 8 }, (_, i) => profile(i + 2));
+  const token = await game.stage('admin', 'addpeople', { batch: 'late8', profiles });
+  assert.equal(store.read().profiles.length, 2);
+  await game.confirm('admin', token);
+  assert.equal(store.read().profiles.length, 10);
+  assert.deepEqual(store.read().pairs, before.pairs);
+  assert.deepEqual(store.read().profiles.slice(0, 2), before.profiles);
+  assert.deepEqual(store.read().accounts['101'], before.accounts['101']);
+  assert.deepEqual(store.read().jobs, before.jobs);
+  assert.equal(new Set(store.read().profiles.map(p => p.code)).size, 10);
+  const pairingToken = await game.stage('admin', 'pairnew', { batch: 'late8' });
+  assert.deepEqual(store.read().pairs, before.pairs);
+  await game.confirm('admin', pairingToken);
+  const s = store.read();
+  assert.equal(s.pairs.length, 5);
+  assert.deepEqual(s.pairs[0], before.pairs[0]);
+  assert.equal(s.phase, 'running');
+  const job = Object.values(s.jobs).find(j => j.kind === 'late-assignments');
+  assert.equal(job.items.length, 7);
+  assert.ok(job.items.every(i => i.userId !== '101'));
+  assert.ok(job.items.every(i => /Your penpal:/.test(i.text)));
+  const reloaded = await new Store(dir).init();
+  assert.deepEqual(reloaded.read().batches, s.batches);
+  assert.match(await game.register({ id: 109, username: 'person_9' }), /Your penpal:/);
+  await assert.rejects(game.stage('admin', 'pairnew', { batch: 'late8' }), /No new compatible pairs/);
+});
+
+test('older stored games gain empty batches and paused games can add pairs without reassigning anyone', async t => {
+  const { store, game, dir } = await setup(t);
+  await prepare(game);
+  await game.confirm('admin', await game.stage('admin', 'launch'));
+  await game.phase('admin', 'paused');
+  const originalPairs = store.read().pairs;
+  await store.update(s => { delete s.batches; });
+  const reloaded = await new Store(dir).init(), resumed = new Game(reloaded);
+  assert.deepEqual(reloaded.read().batches, {});
+  await resumed.confirm('admin', await resumed.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(2), profile(3)] }));
+  await resumed.confirm('admin', await resumed.stage('admin', 'pairnew', { batch: 'late' }));
+  assert.deepEqual(reloaded.read().pairs.slice(0, 1), originalPairs);
+  assert.equal(reloaded.read().pairs.length, 2);
+  assert.equal(reloaded.read().phase, 'paused');
+});
+
+test('batch additions reject duplicates, stale confirmations and ended games', async t => {
+  const { store, game } = await setup(t);
+  await importProfiles(game, [profile(0), profile(1)]);
+  const before = store.read().profiles;
+  await assert.rejects(game.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(0)] }), /already exists/);
+  await assert.rejects(game.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(2), profile(2)] }), /duplicated/);
+  await assert.rejects(game.stage('admin', 'addpeople', { batch: '../late', profiles: [profile(2)] }), /batch name/);
+  assert.deepEqual(store.read().profiles, before);
+  const token = await game.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(2)] });
+  await game.generate('admin');
+  await assert.rejects(game.confirm('admin', token), /configuration changed/);
+  await game.confirm('admin', await game.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(2)] }));
+  await assert.rejects(game.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(3)] }), /Batch already exists/);
+  await store.update(s => { s.phase = 'ended'; });
+  await assert.rejects(game.stage('admin', 'addpeople', { batch: 'later', profiles: [profile(3)] }), /ended/);
+  await assert.rejects(game.stage('admin', 'pairnew', { batch: 'late' }), /ended/);
+});
+
+test('batch broadcasts target only linked batch accounts at confirmation, including late registrations', async t => {
+  const { store, game } = await setup(t);
+  await importProfiles(game, [profile(0)]);
+  await game.register({ id: 100, username: 'person_0' });
+  await game.register({ id: 101, username: 'unrelated_pending' });
+  await game.confirm('admin', await game.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(2), profile(3)] }));
+  await game.register({ id: 102, username: 'person_2' });
+  const token = await game.stage('admin', 'broadcast', { batch: 'late', text: 'Welcome!' });
+  assert.equal(Object.keys(store.read().jobs).length, 0);
+  await game.register({ id: 103, username: 'person_3' });
+  await game.confirm('admin', token);
+  let job = Object.values(store.read().jobs).at(-1);
+  assert.deepEqual(job.items.map(i => i.userId), ['102', '103']);
+  assert.equal(job.batch, 'late');
+  await game.confirm('admin', await game.stage('admin', 'broadcast', { batch: 'late', text: 'A photo', photo: 'photo-id' }));
+  job = Object.values(store.read().jobs).at(-1);
+  assert.equal(job.photo, 'photo-id');
+  assert.deepEqual(job.items.map(i => i.userId), ['102', '103']);
+  await assert.rejects(game.stage('admin', 'broadcast', { batch: 'missing', text: 'Hello' }), /Unknown batch/);
+  await game.confirm('admin', await game.stage('admin', 'broadcast', { text: 'Everyone' }));
+  assert.equal(Object.values(store.read().jobs).at(-1).items.length, 4);
+});
+
+test('batch pairing preserves draft approval until new pairs are confirmed and leaves incompatible people waitlisted', async t => {
+  const { store, game } = await setup(t);
+  await prepare(game);
+  const original = store.read().pairs;
+  await game.confirm('admin', await game.stage('admin', 'addpeople', { batch: 'late', profiles: [profile(2), profile(3), profile(4, { preference: 'Female', gender: 'Female', house: 'Telos' })] }));
+  assert.equal(store.read().pairingReady, true);
+  const token = await game.stage('admin', 'pairnew', { batch: 'late' });
+  assert.equal(store.read().pairingReady, true);
+  await game.confirm('admin', token);
+  assert.equal(store.read().pairingReady, false);
+  assert.equal(store.read().pairs.length, 2);
+  assert.deepEqual(store.read().pairs[0], original[0]);
+  assert.equal(Object.keys(store.read().jobs).length, 0);
+  await game.approve('admin');
+});
+
 test('ambiguous accounts are not automatically linked; manual links are exclusive', async t => {
   const { store,game } = await setup(t);
   await game.register({id:1,username:'person_0'}); await game.register({id:2,username:'person_0'});

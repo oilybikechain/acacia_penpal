@@ -10,7 +10,31 @@ function audit(s, actor, action) {
   s.audit = s.audit.slice(-1000);
 }
 function fingerprint(s) {
-  return createHash('sha256').update(JSON.stringify([s.profiles, s.pairs, s.pairingReady, s.compatibility, s.phase, s.hintSecrets])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([s.profiles, s.pairs, s.pairingReady, s.compatibility, s.phase, s.hintSecrets, s.batches])).digest('hex');
+}
+function batchProfiles(s, batch) {
+  if (!Object.hasOwn(s.batches, batch)) throw new Error('Unknown batch. Use /batches to list batches.');
+  const ids = new Set(s.batches[batch].profileIds);
+  return s.profiles.filter(p => ids.has(p.id));
+}
+function broadcastRecipients(s, batch) {
+  if (batch === undefined) return Object.values(s.accounts);
+  const ids = new Set(batchProfiles(s, batch).map(p => p.id));
+  return Object.values(s.accounts).filter(a => ids.has(a.profileId));
+}
+function validateAddition(s, payload) {
+  if (s.phase === 'ended') throw new Error('Game has ended');
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(payload.batch || ''))
+    throw new Error('Use a batch name of 1–40 letters, numbers, underscores or hyphens.');
+  if (Object.hasOwn(s.batches, payload.batch)) throw new Error('Batch already exists. Choose a new batch name.');
+  if (!Array.isArray(payload.profiles) || !payload.profiles.length) throw new Error('No new participants');
+  const seen = new Set(s.profiles.map(p => p.telegram));
+  return payload.profiles.map(raw => {
+    const p = validateProfile(raw);
+    if (seen.has(p.telegram)) throw new Error(`Telegram handle already exists or is duplicated: @${p.telegram}. Upload only new people.`);
+    seen.add(p.telegram);
+    return p;
+  });
 }
 function autoLink(s) {
   const claimed = new Set(Object.values(s.accounts).map(a => a.profileId).filter(Boolean));
@@ -59,11 +83,20 @@ class Game {
   status(id) { return participantStatus(this.store.read(), id); }
   async stage(actor, action, payload = {}) {
     return this.store.update(s => {
+      if (action === 'addpeople') payload = { batch: payload.batch, profiles: validateAddition(s, payload) };
+      if (action === 'pairnew') {
+        if (s.phase === 'ended') throw new Error('Game has ended');
+        const paired = new Set(s.pairs.flat());
+        const pairs = match(batchProfiles(s, payload.batch).filter(p => !paired.has(p.id)));
+        if (!pairs.length) throw new Error('No new compatible pairs within this batch. Existing pairs are preserved.');
+        payload = { batch: payload.batch, pairs };
+      }
       if (['roster','launch','reset'].includes(action)) {
         if (action === 'roster') draft(s);
         if (action === 'launch') this.checkLaunch(s);
       }
       if (action === 'broadcast') {
+        broadcastRecipients(s, payload.batch);
         if (payload.photo !== undefined && (typeof payload.photo !== 'string' || !payload.photo)) throw new Error('Broadcast photo is invalid');
         if (payload.photo) {
           if (typeof payload.text !== 'string' || payload.text.length > 1024) throw new Error('Photo captions must contain at most 1024 characters');
@@ -104,7 +137,29 @@ class Game {
         const ids = new Set(s.profiles.map(p => p.id));
         for (const a of Object.values(s.accounts)) if (!ids.has(a.profileId)) { a.profileId = null; a.hints = []; }
         autoLink(s); s.pairs = []; s.pairingReady = false;
+        s.batches = {};
         result = `Imported ${s.profiles.length} profiles. Registrations preserved.`;
+      } else if (action === 'addpeople') {
+        const profiles = assignCodes(validateAddition(s, payload), s.profiles);
+        s.profiles.push(...profiles);
+        s.batches[payload.batch] = { profileIds: profiles.map(p => p.id), created: new Date().toISOString() };
+        autoLink(s);
+        result = `Added ${profiles.length} people to batch ${payload.batch}. Existing pairs preserved. Use /pairnew ${payload.batch} to preview pairs within this batch.`;
+      } else if (action === 'pairnew') {
+        if (s.phase === 'ended') throw new Error('Game has ended');
+        s.pairs.push(...payload.pairs);
+        this.validatePairs(s);
+        const ids = new Set(payload.pairs.flat());
+        result = `Added ${payload.pairs.length} pairs for batch ${payload.batch}. Existing pairs preserved.`;
+        if (s.phase === 'draft') {
+          s.pairingReady = false;
+          result += ' Review /pairs, then /approve before launch.';
+        } else {
+          const recipients = Object.values(s.accounts).filter(a => ids.has(a.profileId));
+          const id = createJob(s, 'late-assignments', recipients, a => participantStatus(s, a.id));
+          s.jobs[id].batch = payload.batch;
+          result += ` Assignment delivery job: ${id}`;
+        }
       } else if (action === 'launch') {
         this.checkLaunch(s); s.phase = 'running';
         const recipients = Object.values(s.accounts).filter(a => {
@@ -112,7 +167,8 @@ class Game {
         });
         result = `Game started. Delivery job: ${createJob(s, 'launch', recipients, a => participantStatus(s, a.id))}`;
       } else if (action === 'broadcast') {
-        const id = createJob(s, 'broadcast', Object.values(s.accounts), payload.text);
+        const id = createJob(s, 'broadcast', broadcastRecipients(s, payload.batch), payload.text);
+        if (payload.batch !== undefined) s.jobs[id].batch = payload.batch;
         if (payload.photo) s.jobs[id].photo = payload.photo;
         result = `Broadcast queued. Delivery job: ${id}`;
       } else if (action === 'reset') {
@@ -226,4 +282,4 @@ class Game {
     });
   }
 }
-module.exports = { Game, HINTS, participantStatus, profileFor, partnerFor, autoLink, createJob };
+module.exports = { Game, HINTS, participantStatus, profileFor, partnerFor, autoLink, createJob, batchProfiles, broadcastRecipients };

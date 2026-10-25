@@ -29,7 +29,16 @@ Keep `.env`, `data/`, backups, exports, and organiser documentation private. Use
 6. Correct profiles with `/edit <code> <field> <value>` or adjust pairs with `/pair <code> <code>`. Valid editable fields are the template column names. Edits invalidate draft pairing approval; changing house also reassigns that person's code. A manual pair removes both participants' prior pairs, leaving their former partners waitlisted.
 7. Set five different passwords using `/sethint house <password>` and repeat for `major`, `year`, `gender`, and `name`. Passwords must contain 4–128 characters with no spaces. Only salted scrypt hashes are stored. Submitted password messages are deleted when Telegram permits it. Distribute the passwords separately at your chosen times.
 8. `/approve` the reviewed pairings, then `/launch`. Review the full assignment and note preview and confirm. Launch freezes assignments and sends each registered paired participant their nickname/code and their penpal's nickname/code/note. Review notes for accidental identity disclosure. Real names are withheld until the name hint.
-9. Participants registering or linking afterward retrieve their existing assignment. People with no profile or no pair receive a clear waiting status. No new pairings are created after launch.
+9. Participants registering or linking afterward retrieve their existing assignment. People with no profile or no pair receive a clear waiting status. Use the late-joiner workflow below to append people and create additional pairs after launch while preserving all existing pairs.
+
+## Adding late joiners
+
+1. Prepare a CSV containing **only the new people**, using the same survey headings or template columns. For example, your eight late joiners should be eight rows, without the original roster.
+2. Send `/addpeople late8`, then upload the CSV. Review the participant preview and send `/confirm <token>`. This appends profiles, assigns unique codes, links registered accounts, and saves them as the named batch `late8`. Existing profiles, codes, pairs, hint progress, and delivery jobs stay intact. Duplicate handles and reused batch names are rejected.
+3. Send `/pairnew late8`. Review the proposed pairs and notes, then `/confirm <token>`. Matching considers only unpaired people within that batch and follows the normal house and gender rules. Existing pairs remain intact; incompatible or odd participants stay unpaired. In a draft game, use `/approve` and launch normally afterward. In a running or paused game, confirmation queues assignments only for the newly paired registered accounts. Others can retrieve their assignment with `/start` once registered or linked. Ended games reject additions and new pairings.
+4. Use `/batches` to check batch sizes, registered recipients and unpaired counts. Send `/broadcastbatch late8 Your message here`, review the audience preview, and confirm. For an image, send `/broadcastbatch late8` then upload a photo, or reply to a photo with `/broadcastbatch late8 [caption]`. Only registered accounts linked to this batch receive the message, including unpaired people. Recipients are selected at confirmation; people who register afterward need a later broadcast. The preview reports profiles that are not yet linked.
+
+Batch names are case-sensitive and contain 1–40 letters, numbers, underscores or hyphens, starting with a letter or number. Choose a different name for each upload. Batches persist across restarts and are cleared by a full roster replacement or reset. Use `/pairnew` to preserve pairs: `/generate` still regenerates the entire draft roster.
 
 ## Commands
 
@@ -39,6 +48,10 @@ Admins can use `/help` for the full command list. Main controls:
 
 | Command | Behaviour |
 |---|---|
+| `/addpeople <batch>` | Upload and confirm an append-only CSV of new people, preserving existing pairs. |
+| `/pairnew <batch>` | Preview and confirm new pairs among unpaired members of that batch, even after launch. |
+| `/batches` | List saved batches, registered recipients and unpaired counts. |
+| `/broadcastbatch <batch> [text]` | Preview and confirm text or a photo to one batch only; omit text to upload a photo next. |
 | `/broadcast <text>` | Preview and confirm text to all registered accounts, including pending and waitlisted accounts. Recipients are captured on confirmation. |
 | `/broadcast` | Upload a single photo next, with an optional caption. Review the photo preview, then `/confirm <token>` to send. |
 | `/broadcast [caption]` (reply to a photo) | Preview that photo with the supplied caption, or keep its original caption when omitted. |
@@ -53,7 +66,7 @@ Admins can use `/help` for the full command list. Main controls:
 | `/reset` | Download a backup, then confirm clearing the game while preserving registered Telegram accounts. Wait for queued deliveries to finish first. |
 | `/cancel` | Cancel the latest confirmation or upload request. |
 
-Confirmations expire in 15 minutes and belong to the requesting admin. Game configuration changes invalidate pending confirmations. Pairings and survey data can change only before launch; start a new round with an explicit reset.
+Confirmations expire in 15 minutes and belong to the requesting admin. Game configuration changes invalidate pending confirmations. Replacing survey data or changing existing pairings requires a draft game; `/addpeople` and `/pairnew` can append late joiners and new pairs after launch without changing existing assignments. Start a new round with an explicit reset.
 
 Photo broadcasts support one photo up to 10 MB and a caption up to 1024 characters. Send the image as a Telegram photo, not a file or album. Use `/cancel` to discard an upload request or preview. Images are transferred from the admin bot to the participant bot during delivery; photo jobs use the same persistent results and retry commands as text broadcasts.
 
