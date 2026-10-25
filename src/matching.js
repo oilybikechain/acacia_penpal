@@ -11,12 +11,18 @@ function match(profiles, random = randomInt) {
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = random(i + 1); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
-  // Maximise the number paired, with random tie-breaking among valid pairs.
+  // Maximise the number paired first, then the number of Any participants
+  // matched with the opposite gender. Random weights only break remaining ties.
   // MBTI does not affect eligibility or edge weights.
+  const preferenceWeight = Math.floor(profiles.length / 2) * 999 + 1;
   const edges = [];
   for (let i = 0; i < shuffled.length; i++) for (let j = i + 1; j < shuffled.length; j++) {
-    if (compatible(shuffled[i], shuffled[j]))
-      edges.push([i, j, random(1000) + 1]);
+    const a = shuffled[i], b = shuffled[j];
+    if (compatible(a, b)) {
+      const preferred = a.gender !== b.gender
+        ? Number(a.preference === 'Any') + Number(b.preference === 'Any') : 0;
+      edges.push([i, j, preferred * preferenceWeight + random(1000) + 1]);
+    }
   }
   if (!edges.length) return [];
   const mates = blossom(edges, true), pairs = [];

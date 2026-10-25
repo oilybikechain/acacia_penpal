@@ -119,20 +119,23 @@ test('mutual preferences and different houses are strict, with impossible/odd ro
   assert.equal(match(assignCodes([profile(0),profile(1,{preference:'Female'})])).length,0);
 });
 
-function optimum(profiles) {
+function optimum(profiles, preferOpposite = false) {
   function solve(remaining) {
     if (!remaining.length) return 0;
     const [a,...rest]=remaining;
     let best=solve(rest);
     for(let i=0;i<rest.length;i++) if(compatible(a,rest[i])) {
-      const candidate=1+solve(rest.filter((_,j)=>j!==i));
+      const preferred = a.gender !== rest[i].gender
+        ? Number(a.preference === 'Any') + Number(rest[i].preference === 'Any') : 0;
+      const score = preferOpposite ? profiles.length + 1 + preferred : 1;
+      const candidate=score+solve(rest.filter((_,j)=>j!==i));
       best=Math.max(best,candidate);
     }
     return best;
   }
   return solve(profiles);
 }
-test('equal MBTI matching agrees with exhaustive matching on 120 varied small general graphs', () => {
+test('matching maximises pair count then opposite-gender preferences against exhaustive search', () => {
   let seed=12345; const random=n=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%n;};
   for(let run=0;run<120;run++) {
     const profiles=assignCodes(Array.from({length:3+random(6)},(_,i)=>profile(i,{house:HOUSES[random(5)],gender:random(2)?'Male':'Female',preference:['Any','Male','Female'][random(3)]})));
@@ -143,7 +146,44 @@ test('equal MBTI matching agrees with exhaustive matching on 120 varied small ge
       assert.ok(compatible(a,b));
     }
     assert.equal(pairs.length,optimum(profiles));
+    const score = pairs.reduce((total, [aId, bId]) => {
+      const a = profiles.find(p => p.id === aId), b = profiles.find(p => p.id === bId);
+      return total + profiles.length + 1 + (a.gender !== b.gender
+        ? Number(a.preference === 'Any') + Number(b.preference === 'Any') : 0);
+    }, 0);
+    assert.equal(score, optimum(profiles, true));
   }
+});
+
+test('Any prefers opposite gender but permits same gender to keep more people paired', () => {
+  const people = assignCodes([
+    profile(0, { house: 'Aeon', gender: 'Male' }),
+    profile(1, { house: 'Genesis', gender: 'Male' }),
+    profile(2, { house: 'Nous', gender: 'Female' }),
+    profile(3, { house: 'Telos', gender: 'Female' })
+  ]);
+  for (const random of [() => 0, n => n - 1]) {
+    const pairs = match(people, random);
+    assert.equal(pairs.length, 2);
+    for (const [a, b] of pairs) {
+      assert.notEqual(people.find(p => p.id === a).gender, people.find(p => p.id === b).gender);
+    }
+  }
+  const constrained = people.map(p => ({ ...p }));
+  constrained[0].house = 'Aeon';
+  constrained[1].house = 'Genesis';
+  constrained[2].house = 'Nous';
+  constrained[3].house = 'Aeon';
+  constrained[1].preference = 'Male';
+  constrained[3].preference = 'Female';
+  // Taking the sole opposite-gender edge leaves two people unmatched.
+  const pairs = match(constrained);
+  assert.equal(pairs.length, 2);
+  for (const [a, b] of pairs) {
+    assert.equal(constrained.find(p => p.id === a).gender, constrained.find(p => p.id === b).gender);
+  }
+  const sameGender = people.slice(0, 2);
+  assert.equal(match(sameGender).length, 1);
 });
 
 test('nested blossom expansion handles a valid five-person roster', () => {
