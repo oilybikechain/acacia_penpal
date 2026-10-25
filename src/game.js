@@ -2,6 +2,7 @@ const { randomBytes, scryptSync, timingSafeEqual, createHash } = require('node:c
 const { freshState } = require('./store');
 const { handle, assignCodes, validateProfile } = require('./imports');
 const { match, compatible } = require('./matching');
+const { queueMissedBroadcasts } = require('./broadcasts');
 
 const HINTS = ['house', 'major', 'year', 'gender', 'name'];
 function draft(s) { if (s.phase !== 'draft') throw new Error('This change is available only before launch'); }
@@ -46,6 +47,7 @@ function autoLink(s) {
       a.profileId = candidates[0].id; claimed.add(a.profileId);
     }
   }
+  queueMissedBroadcasts(s);
 }
 function profileFor(s, userId) { return s.profiles.find(p => p.id === s.accounts[String(userId)]?.profileId); }
 function partnerFor(s, profileId) {
@@ -168,7 +170,11 @@ class Game {
         result = `Game started. Delivery job: ${createJob(s, 'launch', recipients, a => participantStatus(s, a.id))}`;
       } else if (action === 'broadcast') {
         const id = createJob(s, 'broadcast', broadcastRecipients(s, payload.batch), payload.text);
-        if (payload.batch !== undefined) s.jobs[id].batch = payload.batch;
+        s.jobs[id].text = payload.text;
+        if (payload.batch !== undefined) {
+          s.jobs[id].batch = payload.batch;
+          s.jobs[id].audienceProfileIds = batchProfiles(s, payload.batch).map(p => p.id);
+        }
         if (payload.photo) s.jobs[id].photo = payload.photo;
         result = `Broadcast queued. Delivery job: ${id}`;
       } else if (action === 'reset') {
@@ -220,6 +226,7 @@ class Game {
       for (const j of Object.values(s.jobs)) if (j.kind !== 'broadcast') for (const item of j.items)
         if (item.userId === a.id && item.status === 'pending') item.status = 'cancelled';
       a.profileId = p.id; a.hints = []; audit(s, actor, 'account linked');
+      queueMissedBroadcasts(s);
       return s.phase !== 'draft' ? createJob(s, 'assignment', [a], participantStatus(s, a.id)) : null;
     });
   }

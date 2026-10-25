@@ -82,7 +82,10 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     bot.use(privateOnly);
     bot.catch(() => console.error('Telegram update failed; update contents omitted.'));
   }
-  participant.start(async ctx => replyLong(ctx, await game.register(ctx.from)));
+  participant.start(async ctx => {
+    await replyLong(ctx, await game.register(ctx.from));
+    delivery.kick()?.catch(reportWorkerError);
+  });
   participant.help(ctx => ctx.reply(PARTICIPANT_HELP));
   participant.command('status', ctx => replyLong(ctx, game.status(ctx.from.id)));
   participant.command('hint', async ctx => {
@@ -134,7 +137,7 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
       });
       return replyLong(ctx, lines.join('\n') || 'No delivery jobs.');
     },
-    broadcasthelp: ctx => ctx.reply('Use /broadcast <announcement text> for text. For an image, send /broadcast then upload a single photo with an optional caption, or reply to a photo with /broadcast [caption]. Photo captions can contain up to 1024 characters. Review the preview, then /confirm to send to all registered accounts, including those waiting for survey profiles. Use /cancel to discard.')
+    broadcasthelp: ctx => ctx.reply('Use /broadcast <announcement text> for text. For an image, send /broadcast then upload a single photo with an optional caption, or reply to a photo with /broadcast [caption]. Photo captions can contain up to 1024 characters. Review the preview, then /confirm to send to all registered accounts, including those waiting for survey profiles. People who register later automatically receive confirmed announcements from this round. Use /cancel to discard.')
   };
   for (const [name, operation] of Object.entries(operations)) command(name, operation);
   admin.action(/^(summary|accounts|import|compatibility|generate|pairs|approve|launch|jobs|broadcasthelp)$/, async ctx => {
@@ -196,7 +199,7 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     uploads.delete(String(ctx.from.id));
     const s = store.read(), recipients = broadcastRecipients(s, batch);
     const audience = batch === undefined ? 'all registered accounts' : `batch ${batch} only (${batchProfiles(s, batch).length - recipients.length} profiles not linked to registered accounts)`;
-    await replyLong(ctx, `PREVIEW — currently ${recipients.length} registered recipients; ${audience}; accounts registering before confirmation will also be included.${photo ? '' : `\n\n${text}`}`);
+    await replyLong(ctx, `PREVIEW — currently ${recipients.length} registered recipients; ${audience}; accounts registering before confirmation will also be included. Late joiners will automatically receive this announcement when they register${batch === undefined ? '' : ' and are linked to this batch'}.${photo ? '' : `\n\n${text}`}`);
     if (photo) await ctx.replyWithPhoto(photo.file_id, { caption: text });
     await ctx.reply(`Send this announcement: /confirm ${token}`);
   };

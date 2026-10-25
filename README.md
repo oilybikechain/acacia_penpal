@@ -21,7 +21,7 @@ Keep `.env`, `data/`, backups, exports, and organiser documentation private. Use
 
 ## Running an event
 
-1. Share the participant bot link immediately. `/start` records Telegram ID and available handle; participants receive a waiting message. Everyone registered can receive broadcasts even without a survey profile.
+1. Share the participant bot link immediately. `/start` records Telegram ID and available handle; participants receive a waiting message. Everyone registered can receive broadcasts even without a survey profile. Someone who registers later automatically receives the confirmed text and photo broadcasts previously sent during the current round.
 2. In the admin bot, use `/import` and send a survey CSV. Review validation results and `/confirm` the import. Imports replace the **draft survey roster**, preserve Telegram registrations, and clear draft pairings.
 3. Check `/accounts` for registrations without linked profiles and `/list` for survey profiles. Handles match case-insensitively, ignoring `@`. Numeric account bindings survive handle changes. Resolve missing/changed handles with `/link <telegram_id> <code>`; use `/unlink <telegram_id>` first if a profile is bound to the wrong account. Participants without a username must use admin-assisted linking.
 4. No MBTI compatibility matrix is needed. All MBTI types are treated equally; MBTI answers are retained only as survey data.
@@ -36,7 +36,7 @@ Keep `.env`, `data/`, backups, exports, and organiser documentation private. Use
 1. Prepare a CSV containing **only the new people**, using the same survey headings or template columns. For example, your eight late joiners should be eight rows, without the original roster.
 2. Send `/addpeople late8`, then upload the CSV. Review the participant preview and send `/confirm <token>`. This appends profiles, assigns unique codes, links registered accounts, and saves them as the named batch `late8`. Existing profiles, codes, pairs, hint progress, and delivery jobs stay intact. Duplicate handles and reused batch names are rejected.
 3. Send `/pairnew late8`. Review the proposed pairs and notes, then `/confirm <token>`. Matching considers only unpaired people within that batch and follows the normal house and gender rules. Existing pairs remain intact; incompatible or odd participants stay unpaired. In a draft game, use `/approve` and launch normally afterward. In a running or paused game, confirmation queues assignments only for the newly paired registered accounts. Others can retrieve their assignment with `/start` once registered or linked. Ended games reject additions and new pairings.
-4. Use `/batches` to check batch sizes, registered recipients and unpaired counts. Send `/broadcastbatch late8 Your message here`, review the audience preview, and confirm. For an image, send `/broadcastbatch late8` then upload a photo, or reply to a photo with `/broadcastbatch late8 [caption]`. Only registered accounts linked to this batch receive the message, including unpaired people. Recipients are selected at confirmation; people who register afterward need a later broadcast. The preview reports profiles that are not yet linked.
+4. Use `/batches` to check batch sizes, registered recipients and unpaired counts. Send `/broadcastbatch late8 Your message here`, review the audience preview, and confirm. For an image, send `/broadcastbatch late8` then upload a photo, or reply to a photo with `/broadcastbatch late8 [caption]`. Only accounts linked to this batch receive the message, including unpaired people. Someone who registers later receives the batch's earlier confirmed broadcasts automatically once their account links to their profile. The preview reports profiles that are not yet linked.
 
 Batch names are case-sensitive and contain 1–40 letters, numbers, underscores or hyphens, starting with a letter or number. Choose a different name for each upload. Batches persist across restarts and are cleared by a full roster replacement or reset. Use `/pairnew` to preserve pairs: `/generate` still regenerates the entire draft roster.
 
@@ -51,8 +51,8 @@ Admins can use `/help` for the full command list. Main controls:
 | `/addpeople <batch>` | Upload and confirm an append-only CSV of new people, preserving existing pairs. |
 | `/pairnew <batch>` | Preview and confirm new pairs among unpaired members of that batch, even after launch. |
 | `/batches` | List saved batches, registered recipients and unpaired counts. |
-| `/broadcastbatch <batch> [text]` | Preview and confirm text or a photo to one batch only; omit text to upload a photo next. |
-| `/broadcast <text>` | Preview and confirm text to all registered accounts, including pending and waitlisted accounts. Recipients are captured on confirmation. |
+| `/broadcastbatch <batch> [text]` | Preview and confirm text or a photo to one batch only; linked late registrants receive its history automatically. |
+| `/broadcast <text>` | Preview and confirm text to all accounts; people registering later receive confirmed broadcast history automatically. |
 | `/broadcast` | Upload a single photo next, with an optional caption. Review the photo preview, then `/confirm <token>` to send. |
 | `/broadcast [caption]` (reply to a photo) | Preview that photo with the supplied caption, or keep its original caption when omitted. |
 | `/jobs` | Show delivery counts per launch, assignment, or broadcast job. |
@@ -69,6 +69,8 @@ Admins can use `/help` for the full command list. Main controls:
 Confirmations expire in 15 minutes and belong to the requesting admin. Game configuration changes invalidate pending confirmations. Replacing survey data or changing existing pairings requires a draft game; `/addpeople` and `/pairnew` can append late joiners and new pairs after launch without changing existing assignments. Start a new round with an explicit reset.
 
 Photo broadcasts support one photo up to 10 MB and a caption up to 1024 characters. Send the image as a Telegram photo, not a file or album. Use `/cancel` to discard an upload request or preview. Images are transferred from the admin bot to the participant bot during delivery; photo jobs use the same persistent results and retry commands as text broadcasts.
+
+Broadcast history is retained in the persistent game state. Repeated `/start` calls do not enqueue duplicates. Global broadcasts replay after any new registration; batch broadcasts wait until the account is linked to a profile in that batch. A full `/reset` starts a new round and clears that history.
 
 ## CSV formats
 

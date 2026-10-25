@@ -27,18 +27,19 @@ function photoMessage(id,caption='',extra={}) {
 async function setup(t) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'acacia-bot-'));
   t.after(()=>fs.rm(dir,{recursive:true,force:true}));
-  const store=await new Store(dir).init(),game=new Game(store),calls=[];
+  const store=await new Store(dir).init(),game=new Game(store),calls=[],kicks=[];
   const original=Telegram.prototype.callApi;
   Telegram.prototype.callApi=async function(method,payload){calls.push({method,payload});return {message_id:1};};
   t.after(()=>{Telegram.prototype.callApi=original;});
-  const bots=createBots({game,store,delivery:{kick:()=>Promise.resolve()},participantToken:'123:test',adminToken:'456:test',adminIds:new Set(['99'])});
-  return {...bots,store,game,calls};
+  const bots=createBots({game,store,delivery:{kick:()=>{kicks.push(Date.now());return Promise.resolve();}},participantToken:'123:test',adminToken:'456:test',adminIds:new Set(['99'])});
+  return {...bots,store,game,calls,kicks};
 }
 test('real Telegram command routing registers before CSV and sends only waiting/help messages',async t=>{
-  const {participant,store,calls}=await setup(t);
+  const {participant,store,calls,kicks}=await setup(t);
   await participant.handleUpdate(message(1,'/start'));
   assert.equal(Object.keys(store.read().accounts).length,1);
   assert.match(calls.at(-1).payload.text,/registered/);
+  assert.equal(kicks.length,1);
   await participant.handleUpdate(message(1,'/status')); assert.match(calls.at(-1).payload.text,/survey profile/);
   await participant.handleUpdate(message(1,'/help')); assert.equal(calls.at(-1).payload.text,PARTICIPANT_HELP);
   await participant.handleUpdate(message(1,'/hint example-password'));

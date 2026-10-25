@@ -35,7 +35,8 @@ class Delivery {
     while (!this.stopping) {
       if (!Object.values(this.store.read().jobs).some(j => j.items.some(i => i.status === 'pending'))) return;
       const claimed = await this.store.update(s => {
-        for (const j of Object.values(s.jobs)) {
+        const jobs = Object.values(s.jobs).sort((a, b) => String(a.created).localeCompare(String(b.created)));
+        for (const j of jobs) {
           const index = j.items.findIndex(i => i.status === 'pending');
           if (index >= 0) { const item = j.items[index]; item.status = 'sending'; item.attempts++; return { jobId: j.id, index, photo: j.photo, photoFileId: j.photoFileId, ...item }; }
         }

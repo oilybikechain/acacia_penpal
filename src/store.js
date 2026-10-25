@@ -1,5 +1,6 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { prepareBroadcastHistory } = require('./broadcasts');
 
 function freshState() {
   return { version: 1, revision: 0, accounts: {}, profiles: [], batches: {}, compatibility: null,
@@ -14,6 +15,7 @@ class Store {
     catch (error) { if (error.code !== 'ENOENT') throw error; this.state = freshState(); }
     if (this.state.version !== 1) throw new Error('Unsupported storage version');
     this.state.batches ||= {};
+    prepareBroadcastHistory(this.state);
     return this;
   }
   read() { return structuredClone(this.state); }

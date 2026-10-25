@@ -361,6 +361,50 @@ test('broadcast includes accounts without CSV; confirmations are scoped, single 
   await assert.rejects(game.confirm('admin',stale),/changed/);
 });
 
+test('late registrations receive confirmed global broadcasts once and batch broadcasts after linking', async t => {
+  const {game,store}=await setup(t);
+  await game.confirm('admin',await game.stage('admin','broadcast',{text:'Global text'}));
+  await game.confirm('admin',await game.stage('admin','broadcast',{text:'Global photo',photo:'photo-id'}));
+  await game.confirm('admin',await game.stage('admin','addpeople',{batch:'late',profiles:[profile(2),profile(3)]}));
+  await game.confirm('admin',await game.stage('admin','broadcast',{batch:'late',text:'Late group only'}));
+  const [globalText,globalPhoto,batch]=Object.values(store.read().jobs);
+  assert.deepEqual([globalText.items.length,globalPhoto.items.length,batch.items.length],[0,0,0]);
+
+  await game.register({id:10,username:'unrelated'});
+  assert.deepEqual(globalText.items,[]); // snapshots do not mutate
+  let jobs=Object.values(store.read().jobs);
+  assert.deepEqual(jobs.map(j=>j.items.map(i=>i.userId)),[['10'],['10'],[]]);
+  await game.register({id:10,username:'unrelated'});
+  jobs=Object.values(store.read().jobs);
+  assert.deepEqual(jobs.map(j=>j.items.map(i=>i.userId)),[['10'],['10'],[]]);
+
+  await game.register({id:12,username:'person_2'});
+  jobs=Object.values(store.read().jobs);
+  assert.deepEqual(jobs.map(j=>j.items.map(i=>i.userId)),[['10','12'],['10','12'],['12']]);
+  assert.equal(jobs[1].photo,'photo-id');
+  assert.ok(jobs.flatMap(j=>j.items).every(i=>i.status==='pending'&&i.attempts===0));
+
+  await game.register({id:13});
+  jobs=Object.values(store.read().jobs);
+  assert.deepEqual(jobs.map(j=>j.items.map(i=>i.userId)),[['10','12','13'],['10','12','13'],['12']]);
+  const code=store.read().profiles.find(p=>p.telegram==='person_3').code;
+  await game.link('admin',13,code);
+  jobs=Object.values(store.read().jobs);
+  assert.deepEqual(jobs.map(j=>j.items.map(i=>i.userId)),[['10','12','13'],['10','12','13'],['12','13']]);
+});
+
+test('restart migrates old broadcast jobs so future registrations receive their history', async t => {
+  const {game,store,dir}=await setup(t);
+  await game.register({id:1});
+  await game.confirm('admin',await game.stage('admin','broadcast',{text:'Historical announcement'}));
+  await store.update(s=>{delete Object.values(s.jobs)[0].text;});
+  const reloaded=await new Store(dir).init(), resumed=new Game(reloaded);
+  const job=Object.values(reloaded.read().jobs)[0];
+  assert.equal(job.text,'Historical announcement');
+  await resumed.register({id:2});
+  assert.deepEqual(Object.values(reloaded.read().jobs)[0].items.map(i=>i.userId),['1','2']);
+});
+
 test('broadcast validates text and photo captions and preserves photo previews across restart', async t => {
   const {game,store,dir}=await setup(t);
   for (const payload of [{}, {text:''}, {text:'x'.repeat(4001)}, {text:42}])

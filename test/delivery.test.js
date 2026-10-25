@@ -96,6 +96,30 @@ test('photo delivery transfers bytes between bots, persists the new file ID, and
   await new Delivery(reloaded,{sendPhoto:async(...args)=>{retryCalls.push(args);}},{sleep:async()=>{}}).kick();
   assert.deepEqual(retryCalls,[['2','participant-photo-id',{caption:'Photo caption',protect_content:true}]]);
 });
+test('a late registration receives prior text and photo broadcasts using the cached photo',async t=>{
+  const {store,game}=await setup(t),calls=[],downloads=[];
+  await game.confirm('admin',await game.stage('admin','broadcast',{text:'Photo history',photo:'admin-photo'}));
+  const telegram={
+    sendMessage:async(user,text)=>calls.push(['text',user,text]),
+    sendPhoto:async(user,photo,extra)=>{
+      calls.push(['photo',user,photo,extra]);
+      return {photo:[{file_id:'participant-photo'}]};
+    }
+  };
+  const options={sleep:async()=>{},sourceTelegram:{getFileLink:async id=>{
+    downloads.push(id);return new URL('https://example.com/photo');
+  }},fetch:async()=>new Response('image bytes')};
+  const worker=new Delivery(store,telegram,options);
+  await worker.kick();
+  await game.register({id:3});
+  await worker.kick();
+  assert.deepEqual(calls.filter(c=>c[1]==='3'),[
+    ['text','3','Announcement'],
+    ['photo','3','participant-photo',{caption:'Photo history',protect_content:true}]
+  ]);
+  assert.deepEqual(downloads,['admin-photo']);
+  assert.ok(Object.values(store.read().jobs).every(j=>j.items.find(i=>i.userId==='3')?.status==='sent'));
+});
 test('photo download failures are retryable failures and upload ambiguity is uncertain',async t=>{
   const {store,game}=await setup(t);
   await game.confirm('admin',await game.stage('admin','broadcast',{text:'',photo:'admin-photo'}));
