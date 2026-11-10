@@ -3,7 +3,7 @@ const { parseRoster, csv, FIELDS } = require('./imports');
 const { participantStatus, partnerFor, batchProfiles, broadcastRecipients } = require('./game');
 const { textChunks } = require('./messages');
 
-const PARTICIPANT_HELP = 'Welcome to ACACIA Penpal!\n/start — register, even before survey data is uploaded\n/status — check your registration or penpal assignment\n/hint <password> — unlock a penpal hint during the game\n/help — show this help\n\nThe organisers will start the game later. This bot does not relay messages.';
+const PARTICIPANT_HELP = 'Welcome to ACACIA Penpal!\n/start — register, even before survey data is uploaded\n/status — check your registration or penpal assignment\n/hint <password> — unlock a penpal hint during the game\n/help — show this help\n\nOnce the organisers enable chatting, messages you send here go to your assigned penpal. Bot commands stay private. Admin broadcasts are labelled [ANNOUNCEMENTS] after chatting is enabled.';
 const ADMIN_HELP = `ACACIA admin console
 /menu — management buttons
 /summary — game and registration counts
@@ -23,6 +23,7 @@ const ADMIN_HELP = `ACACIA admin console
 /sethint <house|major|year|gender|name> <password> — configure a distinct hint password
 /launch — preview game launch
 /pause, /resume, /end — control the game
+/allowchatting — enable penpal chat and notify all registered participants
 /broadcast <text> — preview text, or reply to a photo with an optional caption
 /broadcast — upload a single photo next, with an optional caption
 /broadcastbatch <batch> [text] — text/photo announcement to one batch only
@@ -47,7 +48,7 @@ function adminOnly(ids) {
 }
 function summary(s) {
   const accounts = Object.values(s.accounts), linked = accounts.filter(a => a.profileId).length;
-  return `Game: ${s.phase}\nRegistered accounts: ${accounts.length}\nLinked accounts: ${linked}\nPending accounts: ${accounts.length - linked}\nSurvey profiles: ${s.profiles.length}\nPairs: ${s.pairs.length}\nUnpaired profiles: ${s.profiles.length - s.pairs.length * 2}\nPairings approved: ${s.pairingReady ? 'yes' : 'no'}\nMatching: equal MBTI weights\nHint passwords configured: ${Object.keys(s.hintSecrets).length}/5`;
+  return `Game: ${s.phase}\nChatting enabled: ${s.chattingAllowed ? 'yes' : 'no'}\nRegistered accounts: ${accounts.length}\nLinked accounts: ${linked}\nPending accounts: ${accounts.length - linked}\nSurvey profiles: ${s.profiles.length}\nPairs: ${s.pairs.length}\nUnpaired profiles: ${s.profiles.length - s.pairs.length * 2}\nPairings approved: ${s.pairingReady ? 'yes' : 'no'}\nMatching: equal MBTI weights\nHint passwords configured: ${Object.keys(s.hintSecrets).length}/5`;
 }
 function pairPreview(s, heading = summary(s)) {
   const byId = id => s.profiles.find(p => p.id === id);
@@ -108,7 +109,11 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     try { await ctx.deleteMessage(); } catch {}
     return ctx.reply(password ? await game.hint(ctx.from.id, password) : 'Usage: /hint <password>');
   });
-  participant.on('message', ctx => ctx.reply('Use /start to register, /status to check your assignment, or /help for commands.'));
+  participant.on('message', async ctx => {
+    const response = await game.relay(ctx.from.id, ctx.message);
+    if (response) return ctx.reply(response);
+    delivery.kick()?.catch(reportWorkerError);
+  });
 
   admin.use(adminOnly(adminIds));
   // Report only application validation errors, never raw Telegram/network errors.
@@ -124,11 +129,16 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     [{ text: 'Import survey CSV', callback_data: 'import' }],
     [{ text: 'Generate pairs', callback_data: 'generate' }, { text: 'Review pairs', callback_data: 'pairs' }],
     [{ text: 'Approve pairs', callback_data: 'approve' }, { text: 'Launch preview', callback_data: 'launch' }],
+    [{ text: 'Allow chatting', callback_data: 'allowchatting' }],
     [{ text: 'Broadcast help', callback_data: 'broadcasthelp' }, { text: 'Delivery results', callback_data: 'jobs' }]
   ] } });
   admin.start(menu); command('menu', menu); command('help', ctx => replyLong(ctx, ADMIN_HELP));
   const operations = {
     summary: ctx => ctx.reply(summary(store.read())),
+    allowchatting: async ctx => {
+      await ctx.reply(await game.allowChatting(ctx.from.id));
+      delivery.kick()?.catch(reportWorkerError);
+    },
     accounts: async ctx => {
       const q = args(ctx).toLowerCase(), s = store.read();
       const rows = Object.values(s.accounts).filter(a => `${a.id} ${a.username}`.toLowerCase().includes(q));
@@ -154,7 +164,7 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     broadcasthelp: ctx => ctx.reply('Use /broadcast <announcement text> for text. For an image, send /broadcast then upload a single photo with an optional caption, or reply to a photo with /broadcast [caption]. Photo captions can contain up to 1024 characters. Review the preview, then /confirm to send to all registered accounts, including those waiting for survey profiles. People who register later automatically receive confirmed announcements from this round. Use /cancel to discard.')
   };
   for (const [name, operation] of Object.entries(operations)) command(name, operation);
-  admin.action(/^(summary|accounts|import|compatibility|generate|pairs|approve|launch|jobs|broadcasthelp)$/, async ctx => {
+  admin.action(/^(summary|accounts|import|compatibility|generate|pairs|approve|launch|allowchatting|jobs|broadcasthelp)$/, async ctx => {
     await ctx.answerCbQuery();
     try { await operations[ctx.match[1]](ctx); } catch (error) { await ctx.reply(error.response ? 'Telegram request failed.' : error.message.slice(0, 3500)); }
   });
@@ -204,12 +214,13 @@ function createBots({ game, store, delivery, participantToken, adminToken, admin
     await game.setHint(ctx.from.id, field, password); await ctx.reply(`Password configured for ${field}.`);
   });
   for (const [name, phase] of [['pause','paused'],['resume','running'],['end','ended']])
-    command(name, async ctx => { await game.phase(ctx.from.id, phase); await ctx.reply(`Game ${phase}.`); });
+    command(name, async ctx => { await game.phase(ctx.from.id, phase); await ctx.reply(`Game ${phase}.`); delivery.kick()?.catch(reportWorkerError); });
   const previewBroadcast = async (ctx, text, message, batch) => {
     if (message?.media_group_id) throw new Error('Broadcast supports one photo at a time. Send a single photo instead of an album.');
     const photo = message?.photo?.at(-1);
     if (photo?.file_size > 10 * 1024 * 1024) throw new Error('Broadcast photos must be at most 10 MB');
     const token = await game.stage(ctx.from.id, 'broadcast', { text, ...(batch !== undefined ? { batch } : {}), ...(photo ? { photo: photo.file_id } : {}) });
+    text = store.read().pending[String(ctx.from.id)].payload.text;
     uploads.delete(String(ctx.from.id));
     const s = store.read(), recipients = broadcastRecipients(s, batch);
     const audience = batch === undefined ? 'all registered accounts' : `batch ${batch} only (${batchProfiles(s, batch).length - recipients.length} profiles not linked to registered accounts)`;

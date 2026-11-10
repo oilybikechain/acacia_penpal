@@ -5,13 +5,18 @@ const { match, compatible } = require('./matching');
 const { queueMissedBroadcasts } = require('./broadcasts');
 
 const HINTS = ['house', 'major', 'year', 'gender', 'name'];
+const ANNOUNCEMENTS = '[ANNOUNCEMENTS]';
+const CHAT_NOTICE = `${ANNOUNCEMENTS}\n\nPenpal chatting is now enabled! Any messages you send here from now on will go to your penpal. You can send text, photos, videos, voice messages, stickers and files. Bot commands such as /status, /hint and /help stay private.\n\nIf you are still waiting for an assignment or for your penpal to register, the bot will let you know when a message cannot be sent.`;
+function announcementText(s, text) {
+  return s.chattingAllowed ? `${ANNOUNCEMENTS}${text ? `\n\n${text}` : ''}` : text;
+}
 function draft(s) { if (s.phase !== 'draft') throw new Error('This change is available only before launch'); }
 function audit(s, actor, action) {
   s.audit.push({ at: new Date().toISOString(), actor: String(actor), action });
   s.audit = s.audit.slice(-1000);
 }
 function fingerprint(s) {
-  return createHash('sha256').update(JSON.stringify([s.profiles, s.pairs, s.pairingReady, s.compatibility, s.phase, s.hintSecrets, s.batches])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([s.profiles, s.pairs, s.pairingReady, s.compatibility, s.phase, s.hintSecrets, s.batches, s.chattingAllowed])).digest('hex');
 }
 function batchProfiles(s, batch) {
   if (!Object.hasOwn(s.batches, batch)) throw new Error('Unknown batch. Use /batches to list batches.');
@@ -54,6 +59,10 @@ function partnerFor(s, profileId) {
   const pair = s.pairs.find(pair => pair.includes(profileId));
   return pair && s.profiles.find(p => p.id === pair.find(id => id !== profileId));
 }
+function chatRecipient(s, userId) {
+  const p = profileFor(s, userId), partner = p && partnerFor(s, p.id);
+  return partner && Object.values(s.accounts).find(a => a.profileId === partner.id);
+}
 function participantStatus(s, userId) {
   const a = s.accounts[String(userId)];
   if (!a) return 'Please use /start to register.';
@@ -83,6 +92,39 @@ class Game {
     });
   }
   status(id) { return participantStatus(this.store.read(), id); }
+  async allowChatting(actor) {
+    return this.store.update(s => {
+      if (s.phase !== 'running') throw new Error('Chatting can be enabled only while the game is running.');
+      if (s.chattingAllowed) return 'Chatting is already enabled.';
+      s.chattingAllowed = true;
+      const id = createJob(s, 'broadcast', Object.values(s.accounts), CHAT_NOTICE);
+      s.jobs[id].text = CHAT_NOTICE;
+      audit(s, actor, 'chatting enabled');
+      return `Chatting enabled. Participant notification queued. Delivery job: ${id}`;
+    });
+  }
+  async relay(userId, message) {
+    return this.store.update(s => {
+      if (!s.accounts[String(userId)]) return 'Please use /start to register.';
+      if (!s.chattingAllowed) return 'Penpal chatting has not been enabled yet. Use /status to check your assignment or /help for commands.';
+      if (s.phase !== 'running') return 'Penpal chatting is currently closed. Your message was not sent.';
+      const p = profileFor(s, userId);
+      if (!p || !partnerFor(s, p.id)) return 'You do not have a penpal assignment yet. Your message was not sent.';
+      const recipient = chatRecipient(s, userId);
+      if (!recipient) return 'Your penpal has not registered yet. Your message was not sent. Please try again later.';
+      // Commands never enter the relay, including unknown commands.
+      if (message.text?.startsWith('/')) return 'Use /help for bot commands. Commands are not sent to your penpal.';
+      const supported = ['text', 'photo', 'video', 'animation', 'audio', 'voice', 'video_note', 'sticker', 'document', 'contact', 'location', 'venue'];
+      if (!supported.some(key => message[key])) return 'This message type cannot be sent. Please send text, a photo, video, voice message, sticker or file.';
+      if (!Number.isInteger(message.message_id) || String(message.chat?.id) !== String(userId)) return 'Your message could not be sent. Please try again.';
+      // Polling may replay an update after a crash; do not enqueue it twice.
+      if (Object.values(s.jobs).some(j => j.kind === 'chat' && j.items.some(i => i.sourceUserId === String(userId) && i.sourceMessageId === message.message_id))) return null;
+      const id = createJob(s, 'chat', [recipient]);
+      Object.assign(s.jobs[id].items[0], { sourceUserId: String(userId), sourceMessageId: message.message_id,
+        senderProfileId: p.id, recipientProfileId: recipient.profileId });
+      return null;
+    });
+  }
   async stage(actor, action, payload = {}) {
     return this.store.update(s => {
       if (action === 'addpeople') payload = { batch: payload.batch, profiles: validateAddition(s, payload) };
@@ -105,6 +147,8 @@ class Game {
         } else if (typeof payload.text !== 'string' || !payload.text || payload.text.length > 4000) {
           throw new Error('Broadcast must contain 1–4000 characters');
         }
+        payload = { ...payload, text: announcementText(s, payload.text) };
+        if (payload.photo && payload.text.length > 1024) throw new Error('Photo caption including [ANNOUNCEMENTS] must contain at most 1024 characters');
       }
       const token = randomBytes(8).toString('hex');
       s.pending[String(actor)] = { token, action, payload, fingerprint: fingerprint(s), expires: Date.now() + 15 * 60_000 };
@@ -224,7 +268,7 @@ class Game {
       if (!a || !p) throw new Error('Account or profile not found');
       if (Object.values(s.accounts).some(other => other.id !== a.id && other.profileId === p.id)) throw new Error('Profile is already linked; unlink the old account first');
       for (const j of Object.values(s.jobs)) if (j.kind !== 'broadcast') for (const item of j.items)
-        if (item.userId === a.id && item.status === 'pending') item.status = 'cancelled';
+        if ((item.userId === a.id || item.sourceUserId === a.id) && item.status === 'pending') item.status = 'cancelled';
       a.profileId = p.id; a.hints = []; audit(s, actor, 'account linked');
       queueMissedBroadcasts(s);
       return s.phase !== 'draft' ? createJob(s, 'assignment', [a], participantStatus(s, a.id)) : null;
@@ -234,7 +278,7 @@ class Game {
     return this.store.update(s => {
       const a = s.accounts[String(userId)]; if (!a) throw new Error('Unknown registered account');
       for (const j of Object.values(s.jobs)) if (j.kind !== 'broadcast') for (const item of j.items)
-        if (item.userId === a.id && item.status === 'pending') item.status = 'cancelled';
+        if ((item.userId === a.id || item.sourceUserId === a.id) && item.status === 'pending') item.status = 'cancelled';
       a.profileId = null; a.username = ''; a.hints = []; audit(s, actor, 'account unlinked');
     });
   }
@@ -279,6 +323,8 @@ class Game {
       const allowed = { running: ['paused','ended'], paused: ['running','ended'] };
       if (!allowed[s.phase]?.includes(next)) throw new Error('Invalid game state transition');
       s.phase = next; audit(s, actor, `game ${next}`);
+      if (next === 'ended') for (const j of Object.values(s.jobs)) if (j.kind === 'chat')
+        for (const item of j.items) if (item.status === 'pending') item.status = 'cancelled';
     });
   }
   async retry(actor, id, includeUncertain = false) {
@@ -289,4 +335,4 @@ class Game {
     });
   }
 }
-module.exports = { Game, HINTS, participantStatus, profileFor, partnerFor, autoLink, createJob, batchProfiles, broadcastRecipients };
+module.exports = { Game, HINTS, participantStatus, profileFor, partnerFor, autoLink, createJob, batchProfiles, broadcastRecipients, chatRecipient, CHAT_NOTICE };

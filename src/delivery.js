@@ -1,5 +1,6 @@
 const { setTimeout: sleep } = require('node:timers/promises');
 const { textChunks } = require('./messages');
+const { chatRecipient } = require('./game');
 
 async function downloadPhoto(telegram, fileId, fetcher = fetch) {
   const link = await telegram.getFileLink(fileId);
@@ -33,10 +34,18 @@ class Delivery {
   }
   async drain() {
     while (!this.stopping) {
-      if (!Object.values(this.store.read().jobs).some(j => j.items.some(i => i.status === 'pending'))) return;
+      const snapshot = this.store.read();
+      if (!Object.values(snapshot.jobs).some(j => (j.kind !== 'chat' || snapshot.phase !== 'paused') && j.items.some(i => i.status === 'pending'))) return;
       const claimed = await this.store.update(s => {
         const jobs = Object.values(s.jobs).sort((a, b) => String(a.created).localeCompare(String(b.created)));
         for (const j of jobs) {
+          if (j.kind === 'chat') {
+            // Never deliver queued chat to accounts that have since been rebound.
+            for (const i of j.items) if (i.status === 'pending' && (!s.chattingAllowed || s.phase === 'ended' ||
+              s.accounts[i.sourceUserId]?.profileId !== i.senderProfileId ||
+              s.accounts[i.userId]?.profileId !== i.recipientProfileId || chatRecipient(s, i.sourceUserId)?.id !== i.userId)) i.status = 'cancelled';
+            if (s.phase === 'paused') continue;
+          }
           const index = j.items.findIndex(i => i.status === 'pending');
           if (index >= 0) { const item = j.items[index]; item.status = 'sending'; item.attempts++; return { jobId: j.id, index, photo: j.photo, photoFileId: j.photoFileId, ...item }; }
         }
@@ -45,7 +54,12 @@ class Delivery {
       if (!claimed) return;
       let status = 'sent', errorCode = null, sending = false, photoFileId;
       try {
-        if (claimed.photo) {
+        if (claimed.sourceMessageId !== undefined) {
+          sending = true;
+          // copyMessage omits the original sender's Telegram forwarding header.
+          await this.telegram.callApi('copyMessage', { chat_id: claimed.userId,
+            from_chat_id: claimed.sourceUserId, message_id: claimed.sourceMessageId, protect_content: true });
+        } else if (claimed.photo) {
           // File IDs belong to one bot. Upload bytes from the admin bot once,
           // then reuse the participant bot's file ID for later recipients/retries.
           const photo = claimed.photoFileId || { source: await downloadPhoto(this.sourceTelegram, claimed.photo, this.fetch), filename: 'broadcast.jpg' };

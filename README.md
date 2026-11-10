@@ -30,6 +30,7 @@ Keep `.env`, `data/`, backups, exports, and organiser documentation private. Use
 7. Set five different passwords using `/sethint house <password>` and repeat for `major`, `year`, `gender`, and `name`. Passwords must contain 4–128 characters with no spaces. Only salted scrypt hashes are stored. Submitted password messages are deleted when Telegram permits it. Distribute the passwords separately at your chosen times.
 8. `/approve` the reviewed pairings, then `/launch`. Review the full assignment and note preview and confirm. Launch freezes assignments and sends each registered paired participant their nickname/code and their penpal's nickname/code/note. Review notes for accidental identity disclosure. Real names are withheld until the name hint.
 9. Participants registering or linking afterward retrieve their existing assignment. People with no profile or no pair receive a clear waiting status. Use the late-joiner workflow below to append people and create additional pairs after launch while preserving all existing pairs.
+10. When ready for participants to chat, send `/allowchatting` in the admin bot (or use **Allow chatting** in `/menu`). This enables chat immediately and queues a notice telling all registered participants that messages they send from now on go to their penpal. Later registrants receive the notice too. Subsequent global and batch broadcasts, including photo captions, start with `[ANNOUNCEMENTS]`. Repeating `/allowchatting` does not send another notice.
 
 ## Adding late joiners
 
@@ -42,12 +43,15 @@ Batch names are case-sensitive and contain 1–40 letters, numbers, underscores 
 
 ## Commands
 
-Participants: `/start`, `/status`, `/hint <password>`, `/help`. Hint passwords unlock their corresponding fields independently, in any order. Reusing a password repeats the same hint. Five incorrect attempts temporarily block guesses for one minute. No chat or media is relayed between participants.
+Participants: `/start`, `/status`, `/hint <password>`, `/help`. Hint passwords unlock their corresponding fields independently, in any order. Reusing a password repeats the same hint. Five incorrect attempts temporarily block guesses for one minute.
+
+Chat stays disabled until an admin uses `/allowchatting` during a running game. After that, private messages go only to the sender's assigned, registered penpal. Text, photos, videos, animations, audio, voice messages, video notes, stickers, files, contacts and locations are supported. Commands stay private, including unknown slash commands. Messages are copied without a Telegram forwarding header; participant-authored content can still disclose identity. Albums arrive as individual messages. Unsupported message types, missing assignments and unregistered partners receive an explanation instead of being relayed. Messages sent before chatting is enabled or while the game is paused or ended are not queued.
 
 Admins can use `/help` for the full command list. Main controls:
 
 | Command | Behaviour |
 |---|---|
+| `/allowchatting` | Immediately enable penpal chat, notify participants, and label future broadcasts `[ANNOUNCEMENTS]`. Requires a running game. |
 | `/addpeople <batch>` | Upload and confirm an append-only CSV of new people, preserving existing pairs. |
 | `/pairnew <batch>` | Preview and confirm new pairs among unpaired members of that batch, even after launch. |
 | `/batches` | List saved batches, registered recipients and unpaired counts. |
@@ -58,8 +62,8 @@ Admins can use `/help` for the full command list. Main controls:
 | `/jobs` | Show delivery counts per launch, assignment, or broadcast job. |
 | `/retry <job_id>` | Retry failed deliveries, excluding successful and uncertain sends. |
 | `/retryuncertain <job_id>` | Explicitly retry uncertain sends too; duplicates are possible. |
-| `/pause`, `/resume` | Suspend or reopen hint access. Assignments remain readable. |
-| `/end` | Close hints permanently for this round; preserve assignment lookup. |
+| `/pause`, `/resume` | Suspend or reopen hints and enabled penpal chat. Queued chats wait during pause; assignments remain readable. |
+| `/end` | Close hints and penpal chat for this round; cancel pending chats and preserve assignment lookup. |
 | `/export` | Download a private roster CSV with codes, linked account IDs, and penpal codes. |
 | `/exportpairs` | Download one row per pairing with both names, houses, four-digit ID codes, and codenames. |
 | `/backup` | Download a complete private JSON snapshot, including pending actions and password hashes. |
@@ -69,7 +73,7 @@ Admins can use `/help` for the full command list. Main controls:
 
 Confirmations expire in 15 minutes and belong to the requesting admin. Game configuration changes invalidate pending confirmations. Replacing survey data or changing existing pairings requires a draft game; `/addpeople` and `/pairnew` can append late joiners and new pairs after launch without changing existing assignments. Start a new round with an explicit reset.
 
-Photo broadcasts support one photo up to 10 MB and a caption up to 1024 characters. Send the image as a Telegram photo, not a file or album. Use `/cancel` to discard an upload request or preview. Images are transferred from the admin bot to the participant bot during delivery; photo jobs use the same persistent results and retry commands as text broadcasts.
+Photo broadcasts support one photo up to 10 MB and a caption up to 1024 characters, including the `[ANNOUNCEMENTS]` label once chatting is enabled. Previews show the label before confirmation. Send the image as a Telegram photo, not a file or album. Use `/cancel` to discard an upload request or preview. Images are transferred from the admin bot to the participant bot during delivery; photo jobs use the same persistent results and retry commands as text broadcasts.
 
 Broadcast history is retained in the persistent game state. Repeated `/start` calls do not enqueue duplicates. Global broadcasts replay after any new registration; batch broadcasts wait until the account is linked to a profile in that batch. A full `/reset` starts a new round and clears that history.
 
@@ -92,6 +96,8 @@ Use `/backup` for a snapshot while running. To restore: stop the process, secure
 After an unclean crash, verify no instance is still running before removing the stale `data/process.lock`. Then restart. Never delete the state file to resolve a lock error. A storage parse error stops startup instead of silently discarding the game.
 
 Delivery jobs persist individual recipient results. Rate-limit responses are retried after Telegram's requested delay. A crash during sending or an ambiguous network failure marks the recipient `uncertain`: Telegram may already have accepted the message. These are never resent automatically. `/retryuncertain` is an explicit organiser decision to accept possible duplicates. Account unlinking cancels pending assignment messages; messages already sent or in flight cannot be recalled.
+
+Chat enablement and queued messages survive restarts. Chat jobs store the source chat/message IDs rather than a copy of the message body and use the same delivery results and retry commands. The original message must remain available to Telegram when delivered or retried. Linking or unlinking an account cancels its pending incoming and outgoing chats; delivery also checks the current account bindings before sending. Reset disables chatting for the next round. Chat history is never replayed to new participants.
 
 Telegram must be reachable for live operation. The test suite mocks Telegram and does not send live messages:
 

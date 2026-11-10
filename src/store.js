@@ -4,7 +4,7 @@ const { prepareBroadcastHistory } = require('./broadcasts');
 
 function freshState() {
   return { version: 1, revision: 0, accounts: {}, profiles: [], batches: {}, compatibility: null,
-    pairs: [], pairingReady: false, phase: 'draft', hintSecrets: {}, jobs: {}, pending: {}, audit: [], offsets: {} };
+    pairs: [], pairingReady: false, phase: 'draft', chattingAllowed: false, hintSecrets: {}, jobs: {}, pending: {}, audit: [], offsets: {} };
 }
 
 class Store {
@@ -15,6 +15,7 @@ class Store {
     catch (error) { if (error.code !== 'ENOENT') throw error; this.state = freshState(); }
     if (this.state.version !== 1) throw new Error('Unsupported storage version');
     this.state.batches ||= {};
+    this.state.chattingAllowed ??= false;
     prepareBroadcastHistory(this.state);
     return this;
   }
